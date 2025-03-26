@@ -31,6 +31,7 @@ interface TransactionStatus {
 // 판매 중인 상품 타입 정의
 interface Sale {
   id: number;
+  orderNumber?: string;
   title: string;
   date: string;
   price: string;
@@ -271,7 +272,8 @@ export default function MyPage() {
             : '가격 정보 없음',
           status: statusText,
           isActive: postStatus === 'ACTIVE' || postStatus === '' || postStatus === undefined || postStatus === null,
-          sortPriority: sortPriority  // 정렬용 우선순위 필드 추가
+          sortPriority: sortPriority,  // 정렬용 우선순위 필드 추가
+          orderNumber: relatedPurchase?.orderNumber // 관련 구매의 주문번호 추가
         };
       });
       
@@ -356,6 +358,7 @@ export default function MyPage() {
         
         return {
           id: purchase.id,
+          orderNumber: purchase.orderNumber,  // 주문번호 추가
           title: purchase.ticketTitle || purchase.post?.title || purchase.post?.eventName || "제목 없음",
           date: formatDate(purchase.eventDate, purchase.post?.eventDate, purchase.createdAt),
           price: purchase.totalPrice 
@@ -835,9 +838,9 @@ export default function MyPage() {
                         {item.price}
                       </p>
                       <p className="text-sm text-blue-600">{item.status}</p>
-                      <Link href={`/transaction/${item.id}`}>
+                      <Link href={`/transaction/${item.orderNumber || item.id}`}>
                         <Button className="mt-2 text-sm" variant="outline">
-                          거래 상세
+                          거래 상세 보기
                         </Button>
                       </Link>
                     </div>
@@ -904,9 +907,9 @@ export default function MyPage() {
                         item.status === "거래취소" ? "text-red-600" : "text-gray-600"
                       }`}>{item.status}</p>
                       <div className="flex mt-2 justify-between items-center">
-                        <Link href={`/seller/transaction/${item.id}`}>
+                        <Link href={`/seller/transaction/${item.orderNumber || item.id}`}>
                           <Button className="text-sm" variant="outline">
-                            거래 상세
+                            거래 상세 보기
                           </Button>
                         </Link>
                         <AlertDialog>

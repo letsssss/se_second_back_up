@@ -63,43 +63,30 @@ export async function GET(
     }
     
     const id = params.id;
-    console.log(`요청된 거래 ID: ${id}`);
+    console.log(`요청된 거래 ID 또는 주문번호: ${id}`);
     
     // 인증된 사용자 확인
     let authUser = await getAuthenticatedUser(request);
     
     if (!authUser) {
-      console.log("인증된 사용자를 찾을 수 없음 - 개발 환경에서 우회 시도");
-      
-      // 개발 환경에서만 인증 우회 허용 (프로덕션에서는 제거 필요)
-      if (process.env.NODE_ENV === 'development' && id === '5') {
-        console.log("개발 환경에서 ID 5에 대한 접근 허용");
-        // 임시 사용자 생성
-        authUser = { id: 1, email: 'dev@example.com', name: 'Developer' };
-      } else {
-        return addCorsHeaders(NextResponse.json(
-          { success: false, message: "인증되지 않은 사용자입니다." },
-          { status: 401 }
-        ));
-      }
+      console.log("인증되지 않은 사용자");
+      return addCorsHeaders(NextResponse.json(
+        { success: false, message: "인증되지 않은 사용자입니다." },
+        { status: 401 }
+      ));
     }
     
     console.log("인증된 사용자 ID:", authUser.id);
     
-    // ID가 숫자인지 확인
-    const purchaseId = parseInt(id);
-    if (isNaN(purchaseId)) {
-      console.log("유효하지 않은 구매 ID 형식:", id);
-      return addCorsHeaders(NextResponse.json(
-        { success: false, message: "유효하지 않은 구매 ID입니다." },
-        { status: 400 }
-      ));
-    }
+    let purchase;
     
-    try {
-      // 구매 정보 조회
-      const purchase = await prisma.purchase.findUnique({
-        where: { id: purchaseId },
+    // ID가 숫자인지 문자열인지 확인하여 적절한 쿼리 실행
+    const numericId = parseInt(id);
+    if (!isNaN(numericId)) {
+      console.log(`구매 ID로 조회: ${numericId}`);
+      // 숫자 ID로 조회
+      purchase = await prisma.purchase.findUnique({
+        where: { id: numericId },
         include: {
           post: {
             include: {
@@ -131,82 +118,102 @@ export async function GET(
           }
         }
       });
-      
-      if (!purchase) {
-        console.log(`구매 정보를 찾을 수 없음: ID ${purchaseId}`);
-        return addCorsHeaders(NextResponse.json(
-          { success: false, message: "해당 구매 정보를 찾을 수 없습니다." },
-          { status: 404 }
-        ));
-      }
-      
-      // 접근 권한 확인: 구매자나 판매자만 볼 수 있음
-      if (purchase.buyerId !== authUser.id && purchase.sellerId !== authUser.id) {
-        console.log(`접근 권한 없음: 사용자 ${authUser.id}는 구매 ID ${purchaseId}에 접근할 수 없음`);
-        
-        // 개발 환경에서 ID 5에 대한 접근 허용 (디버깅 목적)
-        if (process.env.NODE_ENV === 'development' && purchaseId === 5) {
-          console.log("개발 환경에서 ID 5에 대한 접근 권한 우회");
-        } else {
-          return addCorsHeaders(NextResponse.json(
-            { success: false, message: "이 거래 정보를 볼 권한이 없습니다." },
-            { status: 403 }
-          ));
-        }
-      }
-      
-      // 응답 데이터를 가공하여 post 필드가 없더라도 필요한 정보가 포함되도록 함
-      const enhancedResponse = (purchase: any) => {
-        const serializedPurchase = convertBigIntToString(purchase);
-        
-        // post 필드가 없는 경우 Purchase 모델의 필드로 보완
-        if (!serializedPurchase.post) {
-          // ticketTitle 등의 필드가 Purchase에 저장되어 있으면 이를 사용하여 post 객체 생성
-          if (serializedPurchase.ticketTitle || serializedPurchase.eventDate || serializedPurchase.eventVenue || serializedPurchase.ticketPrice) {
-            serializedPurchase.post = {
-              title: serializedPurchase.ticketTitle || '제목 없음',
-              eventDate: serializedPurchase.eventDate || null,
-              eventVenue: serializedPurchase.eventVenue || null,
-              ticketPrice: serializedPurchase.ticketPrice || null,
-              author: serializedPurchase.seller || null
-            };
-            
-            console.log('Purchase 필드로부터 post 정보 생성:', serializedPurchase.post);
+    } else {
+      console.log(`주문번호로 조회: ${id}`);
+      // 주문번호로 조회
+      purchase = await prisma.purchase.findUnique({
+        where: { orderNumber: id },
+        include: {
+          post: {
+            include: {
+              author: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  profileImage: true,
+                }
+              }
+            }
+          },
+          buyer: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              profileImage: true,
+            }
+          },
+          seller: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              profileImage: true,
+            }
           }
         }
-        
-        return serializedPurchase;
-      };
-
-      // BigInt 값을 문자열로 변환
-      const serializedPurchase = enhancedResponse(purchase);
-      
-      // 성공 응답 반환
-      return addCorsHeaders(NextResponse.json({
-        success: true,
-        purchase: serializedPurchase
-      }, { status: 200 }));
-      
-    } catch (dbError) {
-      console.error("데이터베이스 조회 오류:", dbError instanceof Error ? dbError.message : String(dbError));
-      console.error("상세 오류:", dbError);
-      
-      return addCorsHeaders(
-        NextResponse.json({ 
-          success: false, 
-          message: "데이터베이스 조회 중 오류가 발생했습니다.",
-          error: process.env.NODE_ENV === 'development' ? String(dbError) : undefined
-        }, { status: 500 })
-      );
+      });
     }
-  } catch (error) {
-    console.error("구매 정보 조회 오류:", error instanceof Error ? error.message : String(error));
-    console.error("상세 오류 스택:", error);
+
+    if (!purchase) {
+      console.log(`구매 정보를 찾을 수 없음: ID 또는 주문번호 ${id}`);
+      return addCorsHeaders(NextResponse.json(
+        { success: false, message: "해당 구매 정보를 찾을 수 없습니다." },
+        { status: 404 }
+      ));
+    }
+    
+    // 접근 권한 확인: 구매자나 판매자만 볼 수 있음
+    if (purchase.buyerId !== authUser.id && purchase.sellerId !== authUser.id) {
+      console.log(`접근 권한 없음: 사용자 ${authUser.id}는 구매 ID ${id}에 접근할 수 없음`);
+      return addCorsHeaders(NextResponse.json(
+        { success: false, message: "이 거래 정보를 볼 권한이 없습니다." },
+        { status: 403 }
+      ));
+    }
+    
+    // 응답 데이터를 가공하여 post 필드가 없더라도 필요한 정보가 포함되도록 함
+    const enhancedResponse = (purchase: any) => {
+      const serializedPurchase = convertBigIntToString(purchase);
+      
+      // post 필드가 없는 경우 Purchase 모델의 필드로 보완
+      if (!serializedPurchase.post) {
+        // ticketTitle 등의 필드가 Purchase에 저장되어 있으면 이를 사용하여 post 객체 생성
+        if (serializedPurchase.ticketTitle || serializedPurchase.eventDate || serializedPurchase.eventVenue || serializedPurchase.ticketPrice) {
+          serializedPurchase.post = {
+            title: serializedPurchase.ticketTitle || '제목 없음',
+            eventDate: serializedPurchase.eventDate || null,
+            eventVenue: serializedPurchase.eventVenue || null,
+            ticketPrice: serializedPurchase.ticketPrice || null,
+            author: serializedPurchase.seller || null
+          };
+          
+          console.log('Purchase 필드로부터 post 정보 생성:', serializedPurchase.post);
+        }
+      }
+      
+      return serializedPurchase;
+    };
+
+    // BigInt 값을 문자열로 변환
+    const serializedPurchase = enhancedResponse(purchase);
+    
+    // 성공 응답 반환
+    return addCorsHeaders(NextResponse.json({
+      success: true,
+      purchase: serializedPurchase
+    }, { status: 200 }));
+    
+  } catch (dbError) {
+    console.error("데이터베이스 조회 오류:", dbError instanceof Error ? dbError.message : String(dbError));
+    console.error("상세 오류:", dbError);
     
     return addCorsHeaders(
       NextResponse.json({ 
         success: false, 
-        message: "구매 정보 조회 중 오류가 발생했습니다." 
+        message: "데이터베이스 조회 중 오류가 발생했습니다.",
+        error: process.env.NODE_ENV === 'development' ? String(dbError) : undefined
       }, { status: 500 })
     );
   }
