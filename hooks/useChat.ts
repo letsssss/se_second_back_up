@@ -101,9 +101,24 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   const socketRef = useRef<Socket | null>(null);
   const connectionAttempts = useRef(0);
   
+  // 메시지 자동 업데이트 요청 중인지 추적하는 플래그 ref
+  const isUpdatingRef = useRef<boolean>(false);
+  
   // 사용자 ID를 localStorage에서 가져오기
   const [actualUserId, setActualUserId] = useState<string | null>(null);
   
+  // 스크롤 관련 상태와 함수 추가
+  const [shouldScrollToBottom, setShouldScrollToBottom] = useState<boolean>(false);
+
+  // 스크롤 이벤트 함수
+  const triggerScrollToBottom = useCallback((smooth: boolean = false) => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('chat:scrollToBottom', { 
+        detail: { smooth } 
+      }));
+    }
+  }, []);
+
   useEffect(() => {
     // 클라이언트 사이드에서만 실행
     if (typeof window === 'undefined') return;
@@ -437,8 +452,8 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   }, [messages]);
 
   // 메시지 목록 가져오기
-  const fetchMessages = useCallback(async (options: { force?: boolean, forceScrollToBottom?: boolean } = {}): Promise<boolean> => {
-    const { force = false, forceScrollToBottom = false } = options;
+  const fetchMessages = useCallback(async (options: { force?: boolean, forceScrollToBottom?: boolean, smoothScroll?: boolean } = {}): Promise<boolean> => {
+    const { force = false, forceScrollToBottom = false, smoothScroll = false } = options;
     
     if (isLoading && !force) {
       console.log('[useChat] 이미 로딩 중, 요청 무시');
@@ -500,9 +515,11 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
         
         setMessages(formattedMessages);
         
-        // 최신 메시지 ID 업데이트
+        // 최신 메시지 ID 업데이트 (마지막 메시지가 최신임)
         if (formattedMessages.length > 0) {
-          setLastMessageId(formattedMessages[0].id);
+          const newestMessage = formattedMessages[formattedMessages.length - 1];
+          setLastMessageId(newestMessage.id);
+          console.log('[useChat] 최신 메시지 ID 업데이트 (fetch):', newestMessage.id);
         }
       }
       
@@ -526,7 +543,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       // 스크롤 이벤트 트리거
       if (forceScrollToBottom) {
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('chat:scrollToBottom'));
+          triggerScrollToBottom(smoothScroll);
         }
       }
       
@@ -538,7 +555,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     } finally {
       setIsLoading(false);
     }
-  }, [actualUserId, transactionId, otherUserId, isLoading]);
+  }, [actualUserId, transactionId, otherUserId, isLoading, triggerScrollToBottom]);
 
   // 상태 초기화 및 메시지 로드
   useEffect(() => {
@@ -764,22 +781,19 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
 
   // 메시지 수신할 때 메시지 리스트를 자동으로 업데이트
   useEffect(() => {
-    // 메시지 자동 업데이트 요청 중인지 추적하는 플래그
-    let isUpdating = false;
-    
     const messageReceivedHandler = () => {
       // 이미 업데이트 중이면 중복 요청 방지
-      if (isUpdating) return;
+      if (isUpdatingRef.current) return;
       
-      isUpdating = true;
+      isUpdatingRef.current = true;
       // 약간의 지연을 두어 메시지가 서버에 저장될 시간을 제공
       setTimeout(() => {
-        fetchMessages({ force: true, forceScrollToBottom: true })
+        fetchMessages({ force: true, forceScrollToBottom: true, smoothScroll: false })
           .catch(err => {
             console.error('[useChat] 메시지 수신 이벤트 후 메시지 목록 업데이트 실패:', err);
           })
           .finally(() => {
-            isUpdating = false;
+            isUpdatingRef.current = false;
           });
       }, 300);
     };
@@ -1000,7 +1014,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
                 
                 // 스크롤 이벤트 트리거
                 if (typeof window !== 'undefined') {
-                  window.dispatchEvent(new CustomEvent('chat:scrollToBottom'));
+                  triggerScrollToBottom(false); // 부드러운 스크롤 없이 즉시 이동
                 }
               } else {
                 console.log('[useChat] 새 메시지 없음');

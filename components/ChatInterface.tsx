@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Image from 'next/image';
 import { X, Send } from 'lucide-react';
 import { Message } from '@/hooks/useChat';
@@ -29,6 +29,9 @@ export function ChatInterface({
   const [newMessage, setNewMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  // 이전 메시지 수를 기록하기 위한 ref를 최상위 레벨로 이동
+  const prevMessagesLengthRef = useRef<number>(0);
 
   // 메시지 전송 처리
   const handleSendMessage = async () => {
@@ -62,24 +65,72 @@ export function ChatInterface({
     return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   };
 
-  // 메시지가 변경될 때 스크롤을 아래로 이동
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
   // 스크롤을 맨 아래로 이동하는 함수
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
     }
-  };
+  }, []);
+
+  // 채팅창이 처음 열리거나 메시지가 로드된 후 스크롤을 하단으로 이동
+  useEffect(() => {
+    if (isOpen && !isLoading && messages.length > 0) {
+      // 메시지가 로드된 직후 항상 스크롤을 맨 아래로 이동
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }
+  }, [isOpen, isLoading, messages, scrollToBottom]);
+  
+  // 메시지 목록이 변경되면 스크롤 위치를 조정합니다
+  useEffect(() => {
+    // 새 메시지가 추가된 경우에만 스크롤 처리
+    if (messages.length > prevMessagesLengthRef.current) {
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }
+    
+    // 현재 메시지 수 업데이트
+    prevMessagesLengthRef.current = messages.length;
+  }, [messages, scrollToBottom]);
 
   // 채팅창이 열릴 때 스크롤을 아래로 이동
   useEffect(() => {
     if (isOpen) {
-      setTimeout(scrollToBottom, 100); // 약간의 지연을 두어 UI가 완전히 렌더링된 후 스크롤
+      // DOM이 완전히 렌더링된 후 스크롤
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
     }
-  }, [isOpen]);
+  }, [isOpen, scrollToBottom]);
+
+  // 글로벌 스크롤 이벤트 리스너 추가
+  useEffect(() => {
+    // 커스텀 이벤트 타입 정의
+    type ScrollEventDetail = {
+      smooth?: boolean;
+    };
+
+    const handleScrollToBottom = (e: Event) => {
+      if (messagesEndRef.current) {
+        // 타입 캐스팅
+        const customEvent = e as CustomEvent<ScrollEventDetail>;
+        const smooth = customEvent.detail?.smooth === true;
+        
+        messagesEndRef.current.scrollIntoView({ 
+          behavior: smooth ? 'smooth' : 'auto',
+          block: 'end'
+        });
+      }
+    };
+
+    window.addEventListener('chat:scrollToBottom', handleScrollToBottom);
+    
+    return () => {
+      window.removeEventListener('chat:scrollToBottom', handleScrollToBottom);
+    };
+  }, []);
 
   // 채팅창이 닫혀있으면 아무것도 렌더링하지 않음
   if (!isOpen) return null;
@@ -112,65 +163,70 @@ export function ChatInterface({
         </div>
 
         {/* 채팅 메시지 영역 */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div 
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto p-4 flex flex-col"
+        >
           {isLoading ? (
             <div className="flex justify-center items-center h-full">
               <div className="text-gray-500">메시지를 불러오는 중...</div>
             </div>
           ) : (
-            <div className="space-y-4">
+            <>
               {messages.length === 0 ? (
-                <div className="text-center text-gray-500 py-4">
+                <div className="text-center text-gray-500 py-4 mt-auto">
                   메시지가 없습니다. 첫 메시지를 보내보세요!
                 </div>
               ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.clientId || message.id}
-                    className={`flex ${message.isMine ? 'justify-end' : 'justify-start'}`}
-                  >
+                <div className="space-y-4 flex flex-col mt-auto">
+                  {messages.map((message) => (
                     <div
-                      className={`max-w-[70%] rounded-lg p-3 ${
-                        message.isMine
-                          ? 'bg-teal-500 text-white rounded-tr-none'
-                          : 'bg-gray-200 text-gray-800 rounded-tl-none'
-                      }`}
+                      key={message.clientId || message.id}
+                      className={`flex ${message.isMine ? 'justify-end' : 'justify-start'}`}
                     >
-                      <p className="text-sm">{message.text}</p>
-                      <div className="flex items-center justify-end mt-1 space-x-1">
-                        {message.status && (
-                          <span 
+                      <div
+                        className={`max-w-[70%] rounded-lg p-3 ${
+                          message.isMine
+                            ? 'bg-teal-500 text-white rounded-tr-none'
+                            : 'bg-gray-200 text-gray-800 rounded-tl-none'
+                        }`}
+                      >
+                        <p className="text-sm">{message.text}</p>
+                        <div className="flex items-center justify-end mt-1 space-x-1">
+                          {message.status && (
+                            <span 
+                              className={`text-xs ${
+                                message.isMine 
+                                  ? message.status === 'failed' 
+                                    ? 'text-red-300' 
+                                    : message.status === 'sending' 
+                                      ? 'text-teal-200' 
+                                      : 'text-teal-100'
+                                  : 'text-gray-500'
+                              }`}
+                            >
+                              {message.status === 'failed' 
+                                ? '전송 실패' 
+                                : message.status === 'sending' 
+                                  ? '전송 중...' 
+                                  : ''}
+                            </span>
+                          )}
+                          <span
                             className={`text-xs ${
-                              message.isMine 
-                                ? message.status === 'failed' 
-                                  ? 'text-red-300' 
-                                  : message.status === 'sending' 
-                                    ? 'text-teal-200' 
-                                    : 'text-teal-100'
-                                : 'text-gray-500'
+                              message.isMine ? 'text-teal-100' : 'text-gray-500'
                             }`}
                           >
-                            {message.status === 'failed' 
-                              ? '전송 실패' 
-                              : message.status === 'sending' 
-                                ? '전송 중...' 
-                                : ''}
+                            {formatMessageTime(message.timestamp)}
                           </span>
-                        )}
-                        <span
-                          className={`text-xs ${
-                            message.isMine ? 'text-teal-100' : 'text-gray-500'
-                          }`}
-                        >
-                          {formatMessageTime(message.timestamp)}
-                        </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
+                  ))}
+                  <div ref={messagesEndRef} />
+                </div>
               )}
-              <div ref={messagesEndRef} />
-            </div>
+            </>
           )}
         </div>
 
