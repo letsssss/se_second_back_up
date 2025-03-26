@@ -73,6 +73,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [socketConnectionFailed, setSocketConnectionFailed] = useState<boolean>(false);
   const [roomId, setRoomId] = useState<string | null>(null);
   const [transactionInfo, setTransactionInfo] = useState<any | null>(null);
   const [otherUserInfo, setOtherUserInfo] = useState<any | null>(null);
@@ -86,6 +87,9 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   // 활성 폴링 여부를 저장하는 ref
   const isPollingActiveRef = useRef<boolean>(true);
+  
+  // 폴링 전환 여부를 추적하는 상태 추가
+  const [useHttpPolling, setUseHttpPolling] = useState<boolean>(false);
   
   // 옵션 안전하게 추출
   const transactionId = options?.transactionId || '';
@@ -169,13 +173,13 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       // Socket.io 인스턴스 생성 및 옵션 설정
       const socket = io(socketURL, {
         transports: ['websocket', 'polling'],
-        reconnectionAttempts: 5,
+        reconnectionAttempts: 10,
         reconnectionDelay: 1000,
-        timeout: 20000, // 타임아웃 증가
+        timeout: 30000,
         forceNew: connectionAttempts.current > 0,
-        autoConnect: true, // 자동 연결 활성화
-        reconnection: true, // 재연결 활성화
-        withCredentials: true, // 인증 쿠키 전송 활성화
+        autoConnect: true,
+        reconnection: true,
+        withCredentials: true,
         query: {
           userId: actualUserId,
           transactionId: transactionId || ''
@@ -216,15 +220,12 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
         
         // 연결 시도 횟수 증가 및 제한 확인
         connectionAttempts.current += 1;
-        if (connectionAttempts.current >= 3) {
+        if (connectionAttempts.current >= 5) {
           console.error('[useChat] 최대 연결 시도 횟수 초과, 연결 중단');
           socket.disconnect();
           
-          // HTTP API 폴백 (지연 실행으로 변경)
-          setTimeout(() => {
-            console.log('[useChat] 최대 연결 시도 초과 후 HTTP API로 메시지 가져오기 시도');
-            setIsLoading(true);
-          }, 1000);
+          // HTTP API 폴백으로 전환
+          switchToHttpPolling();
         }
       });
       
@@ -803,6 +804,92 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     };
   }, [socketRef.current, fetchMessages]);
 
+  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
+  useEffect(() => {
+    if (messages.length > 0) {
+      // 메시지가 생성 시간순으로 정렬되어 있다고 가정하면 
+      // 가장 최근 메시지는 배열의 마지막 요소입니다.
+      const newestMessage = messages[messages.length - 1];
+      if (newestMessage && newestMessage.id) {
+        console.log('[useChat] 최신 메시지 ID 업데이트:', newestMessage.id, '(텍스트: ' + newestMessage.text.substring(0, 20) + '...)');
+        setLastMessageId(newestMessage.id);
+      }
+    }
+  }, [messages]);
+
+  // 소켓 연결 실패 시 HTTP API로 전환하는 함수
+  const switchToHttpPolling = useCallback(() => {
+    if (useHttpPolling) return; // 이미 HTTP 폴링 중이면 스킵
+    
+    console.log('[useChat] Socket.IO 연결 실패, HTTP 폴링으로 전환합니다.');
+    setUseHttpPolling(true);
+    setSocketConnectionFailed(true);
+    
+    // 폴링 시작
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current);
+    }
+    
+    // 즉시 메시지 가져오기
+    fetchMessages({ force: true }).catch(err => {
+      console.error('[useChat] 초기 메시지 로드 실패:', err);
+    });
+    
+    // 폴링 타이머 설정
+    pollingTimerRef.current = setTimeout(pollMessages, pollingIntervalRef.current);
+  }, [useHttpPolling, fetchMessages]);
+  
+  // 주기적으로 메시지를 폴링하는 함수
+  const pollMessages = useCallback(() => {
+    if (!useHttpPolling || !isPollingActiveRef.current) return;
+    
+    console.log('[useChat] HTTP 폴링으로 메시지 가져오기...');
+    fetchMessages({ force: true })
+      .catch(err => {
+        console.error('[useChat] 폴링 중 메시지 로드 실패:', err);
+      })
+      .finally(() => {
+        // 다음 폴링 설정
+        if (isPollingActiveRef.current && useHttpPolling) {
+          pollingTimerRef.current = setTimeout(pollMessages, pollingIntervalRef.current);
+        }
+      });
+  }, [useHttpPolling, fetchMessages]);
+
+  // 컴포넌트 마운트/언마운트 및 의존성 변경 시 실행
+  useEffect(() => {
+    if (!actualUserId || !transactionId) return;
+    
+    console.log('[useChat] 초기화 중, userId:', actualUserId, 'transactionId:', transactionId);
+    
+    // 소켓 연결 시도
+    if (!socketConnectionFailed) {
+      setupSocket();
+    }
+    
+    // HTTP 폴링으로 전환된 경우
+    if (useHttpPolling && !pollingTimerRef.current) {
+      console.log('[useChat] HTTP 폴링 시작...');
+      pollMessages();
+    }
+    
+    // 클린업 함수
+    return () => {
+      console.log('[useChat] 정리 중...');
+      isPollingActiveRef.current = false;
+      
+      if (pollingTimerRef.current) {
+        clearTimeout(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+      
+      if (socketRef.current) {
+        console.log('[useChat] 소켓 연결 해제...');
+        socketRef.current.disconnect();
+      }
+    };
+  }, [actualUserId, transactionId, setupSocket, socketConnectionFailed, useHttpPolling, pollMessages]);
+
   // 폴링 시작 함수
   const startPolling = useCallback(() => {
     if (!isPollingActiveRef.current) return;
@@ -847,11 +934,48 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
             if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
               const newMessages = data.messages;
               
-              // 가장 최근 메시지 ID 가져오기
-              const newestMessageId = newMessages[0]?.id;
+              console.log('[useChat] 폴링으로 가져온 메시지 수:', newMessages.length);
+              console.log('[useChat] 현재 lastMessageId:', lastMessageId);
               
-              // 새 메시지가 있는지 확인
-              if (newestMessageId && newestMessageId !== lastMessageId) {
+              // 서버에서 가져온 메시지와 현재 상태의 메시지 비교
+              let hasNewMessages = false;
+              
+              // 가장 최근 메시지의 ID를 가져옵니다 (일반적으로 배열의 마지막 요소)
+              const serverNewestMessageId = newMessages[newMessages.length - 1]?.id;
+              
+              // 중요: 디버깅 정보 출력
+              if (serverNewestMessageId) {
+                console.log('[useChat] 서버 최신 메시지 ID:', serverNewestMessageId);
+                const serverNewestMessage = newMessages[newMessages.length - 1];
+                console.log('[useChat] 서버 최신 메시지 내용:', 
+                  serverNewestMessage?.content?.substring(0, 30) || '내용 없음');
+              }
+              
+              // 서버에서 가져온 메시지 중 lastMessageId 이후에 추가된 메시지가 있는지 확인
+              if (lastMessageId) {
+                // 메시지 ID를 기준으로 새 메시지 확인
+                const lastMessageIndex = newMessages.findIndex((msg: any) => msg.id === lastMessageId);
+                
+                // lastMessageId가 서버 메시지에 없거나 마지막 메시지가 아니면 새 메시지가 있는 것
+                if (lastMessageIndex === -1 || lastMessageIndex < newMessages.length - 1) {
+                  hasNewMessages = true;
+                  console.log('[useChat] 새 메시지 감지! lastMessageIndex:', lastMessageIndex);
+                }
+              } else {
+                // lastMessageId가 없으면 모든 메시지가 새 메시지
+                hasNewMessages = newMessages.length > 0;
+                console.log('[useChat] lastMessageId가 없어 모든 메시지를 새 메시지로 간주합니다.');
+              }
+              
+              // 또는 메시지 수로 비교 (messages.length < newMessages.length)
+              if (messages.length < newMessages.length) {
+                hasNewMessages = true;
+                console.log('[useChat] 메시지 수 증가 감지:', 
+                  `현재: ${messages.length}, 서버: ${newMessages.length}`);
+              }
+              
+              // 새 메시지가 있으면 메시지 목록 업데이트
+              if (hasNewMessages) {
                 console.log('[useChat] 새 메시지 감지됨, 메시지 목록 업데이트');
                 
                 // 새 메시지가 있으면 메시지 목록 업데이트
@@ -868,7 +992,11 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
                 setMessages(formattedMessages);
                 
                 // 마지막 메시지 ID 업데이트
-                setLastMessageId(newestMessageId);
+                if (formattedMessages.length > 0) {
+                  const newestMsg = formattedMessages[formattedMessages.length - 1];
+                  setLastMessageId(newestMsg.id);
+                  console.log('[useChat] lastMessageId를 업데이트했습니다:', newestMsg.id);
+                }
                 
                 // 스크롤 이벤트 트리거
                 if (typeof window !== 'undefined') {
@@ -887,7 +1015,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       // 폴링 재시작
       startPolling();
     }, pollingIntervalRef.current);
-  }, [actualUserId, transactionId, otherUserId, lastMessageId]);
+  }, [actualUserId, transactionId, otherUserId, lastMessageId, messages.length]);
 
   // 페이지/컴포넌트가 마운트되었을 때 폴링 시작
   useEffect(() => {
@@ -906,16 +1034,6 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       }
     };
   }, [actualUserId, transactionId, startPolling]);
-
-  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
-  useEffect(() => {
-    if (messages.length > 0) {
-      const newestMessage = messages[0];
-      if (newestMessage && newestMessage.id) {
-        setLastMessageId(newestMessage.id);
-      }
-    }
-  }, [messages]);
 
   // 훅 반환 객체
   return {

@@ -19,6 +19,16 @@ const socketHandler = (req, res) => {
   const io = new Server(res.socket.server, {
     path: '/api/socket',
     addTrailingSlash: false,
+    pingTimeout: 30000,     // 핑 타임아웃 (기본값: 20000)
+    pingInterval: 25000,    // 핑 간격 (기본값: 25000)
+    upgradeTimeout: 15000,  // 업그레이드 타임아웃 (기본값: 10000)
+    maxHttpBufferSize: 1e8, // 최대 HTTP 버퍼 크기 (100MB)
+    transports: ['websocket', 'polling'], // 전송 방식
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST'],
+      credentials: true
+    }
   });
   
   res.socket.server.io = io;
