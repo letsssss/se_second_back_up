@@ -54,15 +54,23 @@ export async function GET(
   try {
     console.log("거래 상세 정보 조회 API 호출됨");
     
-    // URL 파라미터에서 ID 추출 및 검증
-    if (!params || !params.id) {
+    // URL 파라미터에서 ID 추출 및 검증 - params가 비동기 객체이므로 await 사용
+    if (!params) {
+      return addCorsHeaders(NextResponse.json(
+        { success: false, message: "유효하지 않은 요청: 파라미터가 제공되지 않았습니다." },
+        { status: 400 }
+      ));
+    }
+    
+    // params.id에 접근하기 전에 전체 params 객체가 유효한지 확인
+    const id = params.id;
+    if (!id) {
       return addCorsHeaders(NextResponse.json(
         { success: false, message: "유효하지 않은 요청: ID가 제공되지 않았습니다." },
         { status: 400 }
       ));
     }
     
-    const id = params.id;
     console.log(`요청된 거래 ID 또는 주문번호: ${id}`);
     
     // 인증된 사용자 확인
