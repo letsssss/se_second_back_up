@@ -53,13 +53,18 @@ export async function PATCH(
     
     console.log("인증된 사용자 ID:", authUser.id);
     
-    // ID가 숫자인지 확인
+    // ID가 숫자면 ID로 조회, 아니면 orderNumber로 조회
     const purchaseId = parseInt(id);
-    if (isNaN(purchaseId)) {
-      return addCorsHeaders(NextResponse.json(
-        { success: false, message: "유효하지 않은 구매 ID입니다." },
-        { status: 400 }
-      ));
+    let whereCondition: any;
+    
+    if (!isNaN(purchaseId)) {
+      // ID가 숫자인 경우 ID로 조회
+      whereCondition = { id: purchaseId };
+      console.log(`ID를 사용하여 조회: ${purchaseId}`);
+    } else {
+      // ID가 숫자가 아닌 경우 orderNumber로 조회
+      whereCondition = { orderNumber: id };
+      console.log(`주문번호(orderNumber)를 사용하여 조회: ${id}`);
     }
     
     // 요청 바디에서 새 상태 가져오기
@@ -76,9 +81,9 @@ export async function PATCH(
     }
     
     try {
-      // 기존 구매 정보 조회
+      // 기존 구매 정보 조회 (ID 또는 orderNumber로)
       const existingPurchase = await prisma.purchase.findUnique({
-        where: { id: purchaseId },
+        where: whereCondition,
       });
       
       if (!existingPurchase) {
@@ -135,7 +140,7 @@ export async function PATCH(
       const updatedPurchase = await prisma.$transaction(async (tx) => {
         // 구매 정보 업데이트
         const purchase = await tx.purchase.update({
-          where: { id: purchaseId },
+          where: whereCondition,
           data: { 
             status,
             updatedAt: new Date() 
