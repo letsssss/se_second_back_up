@@ -343,8 +343,15 @@ export default function TransactionDetail() {
           
           // ✅ 구매자와 판매자 ID가 모두 존재할 때만 채팅 준비
           if (purchaseData.purchase.buyer?.id && purchaseData.purchase.seller?.id) {
+            // 거래 ID 또는 주문번호 준비
+            const transactionIdentifier = typeof id === 'string' && id.match(/[A-Z0-9]{12}/) 
+              ? id  // 주문번호 형식이면 그대로 사용 (예: XJ2HR85VVGH4)
+              : purchaseData.purchase.id.toString(); // 그렇지 않으면 숫자 ID 사용
+              
+            console.log('[트랜잭션 페이지] 채팅 설정을 위한 거래 식별자:', transactionIdentifier);
+            
             setChatProps({
-              transactionId: id,
+              transactionId: transactionIdentifier,
               userId,
               userRole,
               otherUserId: userRole === 'buyer' 
@@ -382,6 +389,36 @@ export default function TransactionDetail() {
     
     fetchTransactionData();
   }, [params?.id, toast]);
+
+  // 메시지 가져오기 상태를 추적하는 ref
+  const fetchMessageAttemptedRef = useRef(false);
+  
+  // 채팅 준비가 완료되면 메시지 가져오기
+  useEffect(() => {
+    if (chatReady && fetchMessages && !fetchMessageAttemptedRef.current) {
+      console.log('[트랜잭션 페이지] 채팅 준비 완료, 메시지 가져오기 시도');
+      fetchMessageAttemptedRef.current = true;
+      
+      // 짧은 지연 시간 후 메시지 가져오기 (한 번만 실행)
+      const timer = setTimeout(() => {
+        fetchMessages(true) // force 파라미터를 true로 설정하여 중복 체크를 무시
+          .then(success => {
+            if (success) {
+              console.log('[트랜잭션 페이지] 메시지 가져오기 성공');
+            } else {
+              console.error('[트랜잭션 페이지] 메시지 가져오기 실패');
+            }
+          })
+          .catch(error => {
+            console.error('[트랜잭션 페이지] 메시지 가져오기 오류:', error);
+          });
+      }, 500);
+      
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+  }, [chatReady, fetchMessages]);
 
   // 상태 텍스트 변환 함수
   function getStatusText(status: string): string {
