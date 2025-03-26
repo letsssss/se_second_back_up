@@ -100,7 +100,8 @@ export default function TransactionDetail() {
     socketConnected,
     sendMessage,
     fetchMessages,
-    error: chatError
+    error: chatError,
+    markMessagesAsRead
   } = useChat(chatReady ? chatProps : null)
 
   // 메시지 전송 핸들러 함수 (ChatInterface에서 사용)
@@ -120,7 +121,7 @@ export default function TransactionDetail() {
         return false;
       }
       
-      await fetchMessages(); // 새 메시지 전송 후 다시 불러오기
+      await fetchMessages({ force: true }); // 새 메시지 전송 후 다시 불러오기
       return true;
     } catch (error) {
       console.error('메시지 전송 오류:', error);
@@ -129,6 +130,25 @@ export default function TransactionDetail() {
         description: '메시지 전송 중 오류가 발생했습니다.',
         variant: 'destructive',
       });
+      return false;
+    }
+  };
+
+  // 메시지 읽음 처리 핸들러 함수
+  const handleMarkAsRead = async (): Promise<boolean> => {
+    console.log('[트랜잭션 페이지] markMessagesAsRead 호출 시도', {
+      chatReady,
+      chatProps,
+      hasChatProps: !!chatProps,
+      socketConnected
+    });
+    
+    try {
+      const result = await markMessagesAsRead();
+      console.log('[트랜잭션 페이지] markMessagesAsRead 호출 결과:', result);
+      return result;
+    } catch (error) {
+      console.error('[트랜잭션 페이지] 메시지 읽음 처리 오류:', error);
       return false;
     }
   };
@@ -350,15 +370,22 @@ export default function TransactionDetail() {
               
             console.log('[트랜잭션 페이지] 채팅 설정을 위한 거래 식별자:', transactionIdentifier);
             
-            setChatProps({
+            // 채팅 설정을 한번에 객체로 생성 후 로그 출력
+            const chatConfig = {
               transactionId: transactionIdentifier,
               userId,
               userRole,
               otherUserId: userRole === 'buyer' 
                 ? purchaseData.purchase.seller.id.toString() 
                 : purchaseData.purchase.buyer.id.toString()
-            });
+            };
+            
+            console.log('[트랜잭션 페이지] 채팅 설정:', chatConfig);
+            setChatProps(chatConfig);
             setChatReady(true);
+            console.log('[트랜잭션 페이지] 채팅 준비 완료, ready 상태:', true);
+          } else {
+            console.warn('[트랜잭션 페이지] 구매자 또는 판매자 ID가 없어 채팅을 초기화할 수 없습니다.');
           }
           
           // 중요: 로딩 상태 해제
@@ -396,27 +423,25 @@ export default function TransactionDetail() {
   // 채팅 준비가 완료되면 메시지 가져오기
   useEffect(() => {
     if (chatReady && fetchMessages && !fetchMessageAttemptedRef.current) {
-      console.log('[트랜잭션 페이지] 채팅 준비 완료, 메시지 가져오기 시도');
+      console.log('[트랜잭션 페이지] 채팅 준비 완료, 메시지 가져오기 시도', {
+        chatReady,
+        chatProps,
+        hasProps: !!chatProps
+      });
+      
       fetchMessageAttemptedRef.current = true;
-      
-      // 짧은 지연 시간 후 메시지 가져오기 (한 번만 실행)
-      const timer = setTimeout(() => {
-        fetchMessages(true) // force 파라미터를 true로 설정하여 중복 체크를 무시
-          .then(success => {
-            if (success) {
-              console.log('[트랜잭션 페이지] 메시지 가져오기 성공');
-            } else {
-              console.error('[트랜잭션 페이지] 메시지 가져오기 실패');
-            }
-          })
-          .catch(error => {
-            console.error('[트랜잭션 페이지] 메시지 가져오기 오류:', error);
-          });
-      }, 500);
-      
-      return () => {
-        clearTimeout(timer);
-      };
+      console.log('서버에서 메시지 가져오기 시도...');
+      fetchMessages({ force: true }) // 객체 형태의 매개변수로 수정
+        .then(success => {
+          if (success) {
+            console.log('메시지 가져오기 성공');
+          } else {
+            console.error('메시지 가져오기 실패');
+          }
+        })
+        .catch(error => {
+          console.error('메시지 가져오기 오류:', error);
+        });
     }
   }, [chatReady, fetchMessages]);
 
@@ -1117,6 +1142,7 @@ export default function TransactionDetail() {
         messages={messages}
         isLoading={isMessagesLoading}
         onSendMessage={handleSendMessage}
+        onMarkAsRead={handleMarkAsRead}
         otherUserName={currentUserRole === 'buyer' 
           ? transaction?.seller?.name || "판매자" 
           : transaction?.buyer?.name || "구매자"}

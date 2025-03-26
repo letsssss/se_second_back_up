@@ -25,6 +25,7 @@ export interface Message {
   timestamp: string;
   isMine: boolean;
   status?: 'sending' | 'sent' | 'failed';
+  isRead?: boolean;
 }
 
 // useChat 훅의 옵션
@@ -48,6 +49,7 @@ export interface ChatReturn {
   otherUserInfo: any | null;
   conversations: any[];
   hasMore: boolean;
+  markMessagesAsRead: () => Promise<boolean>;
 }
 
 // 로컬 스토리지에서 사용자 정보 가져오기 함수
@@ -82,7 +84,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   // 마지막 메시지 ID를 저장하는 상태 추가
   const [lastMessageId, setLastMessageId] = useState<string | null>(null);
   // 폴링 간격을 저장하는 ref (ms 단위)
-  const pollingIntervalRef = useRef<number>(7000); // 기본값 7초
+  const pollingIntervalRef = useRef<number>(3000); // 기본값 3초로 단축
   // 폴링 타이머 ID를 저장하는 ref
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   // 활성 폴링 여부를 저장하는 ref
@@ -451,23 +453,64 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     );
   }, [messages]);
 
-  // 메시지 목록 가져오기
-  const fetchMessages = useCallback(async (options: { force?: boolean, forceScrollToBottom?: boolean, smoothScroll?: boolean } = {}): Promise<boolean> => {
-    const { force = false, forceScrollToBottom = false, smoothScroll = false } = options;
+  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
+  useEffect(() => {
+    if (messages.length > 0) {
+      // 메시지가 생성 시간순으로 정렬되어 있다고 가정하면 
+      // 가장 최근 메시지는 배열의 마지막 요소입니다.
+      const newestMessage = messages[messages.length - 1];
+      if (newestMessage && newestMessage.id) {
+        console.log('[useChat] 최신 메시지 ID 업데이트:', newestMessage.id, '(텍스트: ' + newestMessage.text.substring(0, 20) + '...)');
+        setLastMessageId(newestMessage.id);
+      }
+    }
+  }, [messages]);
+
+  // 사용자가 보기에 쉬운 오류 메시지 반환
+  const getHumanReadableError = useCallback((error: any): string => {
+    if (!error) return '알 수 없는 오류가 발생했습니다.';
+    
+    const errorStr = typeof error === 'string' 
+      ? error 
+      : error.message || JSON.stringify(error);
+      
+    if (errorStr.includes('인증') || errorStr.includes('auth')) {
+      return '인증 오류가 발생했습니다. 로그인 상태를 확인해 주세요.';
+    }
+    
+    if (errorStr.includes('timeout') || errorStr.includes('시간 초과')) {
+      return '서버 연결 시간이 초과되었습니다. 네트워크 상태를 확인해 주세요.';
+    }
+    
+    if (errorStr.includes('network') || errorStr.includes('네트워크')) {
+      return '네트워크 오류가 발생했습니다. 인터넷 연결을 확인해 주세요.';
+    }
+    
+    return errorStr;
+  }, []);
+
+  // 메시지 목록 가져오기 함수를 먼저 선언 (순환 참조 문제 해결)
+  const fetchMessages = useCallback(async (options: { force?: boolean, forceScrollToBottom?: boolean, smoothScroll?: boolean, silent?: boolean } = {}): Promise<boolean> => {
+    const { force = false, forceScrollToBottom = false, smoothScroll = false, silent = false } = options;
     
     if (isLoading && !force) {
       console.log('[useChat] 이미 로딩 중, 요청 무시');
       return false;
     }
     
-    setIsLoading(true);
+    // silent 옵션이 true가 아닐 때만 로딩 상태 표시
+    if (!silent) {
+      setIsLoading(true);
+    }
+    
     setError(null);
     
     try {
       console.log('[useChat] 메시지 가져오기 시도:', { 
         transactionId, 
         userId: actualUserId,
-        otherUserId
+        otherUserId,
+        silent
       });
       
       // HTTP API를 통해 메시지 가져오기
@@ -499,7 +542,27 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       }
       
       const data = await response.json();
-      console.log('[useChat] 메시지 가져오기 결과:', data);
+      console.log('[useChat] 메시지 가져오기 결과:', {
+        roomInfo: data.room ? { id: data.room.id, name: data.room.name } : null,
+        messagesCount: data.messages?.length || 0,
+        hasRoom: !!data.room
+      });
+      
+      // 추가 정보 설정 - 룸 ID 설정을 메시지 처리보다 먼저 수행
+      if (data.room) {
+        console.log('[useChat] 룸 ID 설정:', data.room.id);
+        setRoomId(data.room.id);
+      } else {
+        console.log('[useChat] 메시지 로드 성공했지만 룸 정보가 없음, API 응답 확인 필요');
+        console.log('[useChat] data 구조:', Object.keys(data));
+        
+        // data에서 룸 ID를 찾을 수 있는 다른 방법 시도
+        if (data.messages?.length > 0 && data.messages[0].roomId) {
+          const firstMsgRoomId = data.messages[0].roomId;
+          console.log('[useChat] 메시지에서 룸 ID 추출:', firstMsgRoomId);
+          setRoomId(String(firstMsgRoomId));
+        }
+      }
       
       if (data.messages && Array.isArray(data.messages)) {
         // 메시지 형식 변환
@@ -510,7 +573,8 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
           text: msg.content,
           timestamp: msg.createdAt,
           isMine: String(msg.senderId) === actualUserId,
-          status: 'sent'
+          status: 'sent',
+          isRead: msg.isRead
         }));
         
         setMessages(formattedMessages);
@@ -523,10 +587,6 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
         }
       }
       
-      // 추가 정보 설정
-      if (data.room) {
-        setRoomId(data.room.id);
-      }
       if (data.transaction) {
         setTransactionInfo(data.transaction);
       }
@@ -548,55 +608,183 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       }
       
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('[useChat] 메시지 가져오기 오류:', error);
       setError('메시지를 불러오는데 실패했습니다.');
       return false;
     } finally {
-      setIsLoading(false);
+      // silent 옵션이 true가 아닐 때만 로딩 상태 해제
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
-  }, [actualUserId, transactionId, otherUserId, isLoading, triggerScrollToBottom]);
+  }, [actualUserId, transactionId, otherUserId, isLoading, triggerScrollToBottom, getHumanReadableError]);
 
-  // 상태 초기화 및 메시지 로드
-  useEffect(() => {
-    console.log('[useChat] 초기 메시지 로드 시도');
-    // 이미 로드된 메시지가 있는지 확인하여 중복 로드 방지
-    if (actualUserId && transactionId && messages.length === 0) {
-      // 소켓 연결 실패를 대비하여 API 호출을 통해 초기 메시지 로드
-      fetchMessages({ force: true })
-        .then(success => {
-          if (!success) {
-            console.warn('[useChat] 초기 메시지 로드 실패');
-          }
-        })
-        .catch(error => {
-          console.error('[useChat] 초기 메시지 로드 오류:', error);
-        });
-    }
-  }, [actualUserId, transactionId, fetchMessages, messages.length]);
-
-  // 사용자가 보기에 쉬운 오류 메시지 반환
-  const getHumanReadableError = useCallback((error: any): string => {
-    if (!error) return '알 수 없는 오류가 발생했습니다.';
+  // 메시지 읽음 상태 업데이트 함수
+  const markMessagesAsRead = useCallback(async (): Promise<boolean> => {
+    // 디버깅을 위한 상세 로그 추가
+    console.log('[useChat] markMessagesAsRead 호출됨, 상태:', {
+      roomId,
+      actualUserId,
+      socketConnected,
+      messagesCount: messages.length,
+      unreadMessages: messages.filter(m => !m.isMine && !m.isRead)
+        .map(m => ({id: m.id, text: m.text.substring(0, 15)}))
+    });
     
-    const errorStr = typeof error === 'string' 
-      ? error 
-      : error.message || JSON.stringify(error);
+    if (!roomId || !actualUserId) {
+      console.warn('[useChat] markMessagesAsRead: 방 ID 또는 사용자 ID가 없습니다.');
       
-    if (errorStr.includes('인증') || errorStr.includes('auth')) {
-      return '인증 오류가 발생했습니다. 로그인 상태를 확인해 주세요.';
+      // 이미 메시지가 있는데 roomId가 없는 경우 경고 로그만 남김
+      if (messages.length > 0) {
+        console.log('[useChat] 메시지는 있지만 roomId가 없음. roomId가 로드될 때까지 기다려주세요.');
+      }
+      
+      return false;
     }
+
+    // 읽지 않은 메시지가 있는지 확인
+    const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
+    console.log('[useChat] 읽지 않은 메시지 존재 여부:', hasUnreadMessages, '전체 메시지 수:', messages.length);
     
-    if (errorStr.includes('timeout') || errorStr.includes('시간 초과')) {
-      return '서버 연결 시간이 초과되었습니다. 네트워크 상태를 확인해 주세요.';
+    // 읽지 않은 메시지가 없으면 바로 종료
+    if (!hasUnreadMessages) {
+      console.log('[useChat] 읽지 않은 메시지가 없어서 읽음 처리 스킵');
+      return true;
     }
-    
-    if (errorStr.includes('network') || errorStr.includes('네트워크')) {
-      return '네트워크 오류가 발생했습니다. 인터넷 연결을 확인해 주세요.';
+
+    try {
+      // 소켓 연결 상태 확인
+      if (socketRef.current && socketConnected) {
+        console.log('[useChat] 소켓으로 읽음 상태 업데이트 시도:', { 
+          roomId, 
+          userId: actualUserId 
+        });
+        
+        socketRef.current.emit('markAsRead', {
+          roomId,
+          userId: parseInt(actualUserId)
+        });
+        
+        console.log('[useChat] 소켓으로 읽음 상태 업데이트 요청 전송 완료');
+        
+        // 로컬 메시지 상태 업데이트
+        setMessages(prev => {
+          const updated = prev.map(msg => {
+            if (!msg.isMine && !msg.isRead) {
+              console.log('[useChat] 메시지 읽음 처리:', msg.id);
+              return { ...msg, isRead: true };
+            }
+            return msg;
+          });
+          
+          console.log('[useChat] 메시지 업데이트 완료:', 
+            updated.filter(m => !m.isMine).map(m => ({id: m.id, isRead: m.isRead}))
+          );
+          
+          return updated;
+        });
+        
+        // 일정 시간 후에 메시지 목록을 다시 확인하는 코드 추가
+        setTimeout(() => {
+          // 소켓 이벤트를 통해 메시지 상태 업데이트 요청
+          if (socketRef.current) {
+            socketRef.current.emit('getMessages', { roomId });
+          }
+        }, 500);
+        
+        return true;
+      } else {
+        // HTTP API로 읽음 상태 업데이트
+        console.log('[useChat] HTTP API로 읽음 상태 업데이트 시도');
+        
+        const authToken = getAuthToken();
+        const response = await fetch(`/api/messages/read`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            roomId,
+            userId: actualUserId
+          })
+        });
+        
+        const responseData = await response.json();
+        console.log('[useChat] 읽음 상태 API 응답:', responseData);
+        
+        if (response.ok) {
+          // 로컬 메시지 상태 업데이트
+          setMessages(prev => {
+            const updated = prev.map(msg => {
+              if (!msg.isMine && !msg.isRead) {
+                console.log('[useChat] 메시지 읽음 처리(HTTP):', msg.id);
+                return { ...msg, isRead: true };
+              }
+              return msg;
+            });
+            
+            console.log('[useChat] 메시지 업데이트 완료(HTTP):', 
+              updated.filter(m => !m.isMine).map(m => ({id: m.id, isRead: m.isRead}))
+            );
+            
+            return updated;
+          });
+          
+          // 일정 시간 후에 메시지 목록을 다시 가져오기
+          // 순환 참조를 피하기 위해 직접 API 호출 사용
+          setTimeout(async () => {
+            try {
+              // HTTP API를 통해 메시지 가져오기
+              const params = new URLSearchParams();
+              if (transactionId) {
+                params.append('purchaseId', transactionId);
+              }
+              if (otherUserId) {
+                params.append('conversationWith', otherUserId);
+              }
+              
+              const authToken = getAuthToken();
+              const response = await fetch(`/api/messages?${params.toString()}`, {
+                headers: {
+                  'Authorization': `Bearer ${authToken}`,
+                }
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                if (data.messages && Array.isArray(data.messages)) {
+                  const formattedMessages: Message[] = data.messages.map((msg: any) => ({
+                    id: msg.id,
+                    senderId: String(msg.senderId),
+                    receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
+                    text: msg.content,
+                    timestamp: msg.createdAt,
+                    isMine: String(msg.senderId) === actualUserId,
+                    status: 'sent',
+                    isRead: msg.isRead
+                  }));
+                  
+                  setMessages(formattedMessages);
+                  console.log('[useChat] 읽음 처리 후 메시지 상태 업데이트 완료');
+                }
+              }
+            } catch (error) {
+              console.error('[useChat] 읽음 처리 후 메시지 확인 오류:', error);
+            }
+          }, 500);
+          
+          return true;
+        } else {
+          throw new Error(`읽음 상태 업데이트 실패: ${responseData.error || '알 수 없는 오류'}`);
+        }
+      }
+    } catch (error) {
+      console.error('[useChat] 읽음 상태 업데이트 오류:', error);
+      return false;
     }
-    
-    return errorStr;
-  }, []);
+  }, [roomId, actualUserId, socketConnected, messages, transactionId, otherUserId]);
 
   // 메시지 전송 실패 시 자동 재시도 기능 (1회만)
   const handleMessageSendError = useCallback(async (
@@ -788,7 +976,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       isUpdatingRef.current = true;
       // 약간의 지연을 두어 메시지가 서버에 저장될 시간을 제공
       setTimeout(() => {
-        fetchMessages({ force: true, forceScrollToBottom: true, smoothScroll: false })
+        fetchMessages({ force: true, forceScrollToBottom: true, smoothScroll: false, silent: true })
           .catch(err => {
             console.error('[useChat] 메시지 수신 이벤트 후 메시지 목록 업데이트 실패:', err);
           })
@@ -807,6 +995,11 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       socketRef.current.on('message', messageReceivedHandler);
       socketRef.current.on('messageReceived', messageReceivedHandler);
       socketRef.current.on('messageUpdated', messageReceivedHandler);
+      
+      console.log('[useChat] 소켓 이벤트 리스너 설정 완료', {
+        connected: socketRef.current.connected,
+        socketId: socketRef.current.id
+      });
     }
 
     return () => {
@@ -817,6 +1010,51 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       }
     };
   }, [socketRef.current, fetchMessages]);
+
+  // 소켓 이벤트 리스너 설정 개선 - 읽음 상태 처리
+  useEffect(() => {
+    if (!socketRef.current || !socketConnected || !roomId) return;
+    
+    console.log('[useChat] 소켓 이벤트 리스너 설정 중', {
+      socketId: socketRef.current.id,
+      connected: socketConnected,
+      roomId
+    });
+    
+    // 읽음 상태 업데이트 이벤트
+    const messageReadHandler = (data: any) => {
+      console.log('[useChat] messageRead 이벤트 수신:', data);
+      
+      // 내가 보낸 메시지의 읽음 상태 업데이트
+      if (data.messageIds && Array.isArray(data.messageIds)) {
+        setMessages(prev => 
+          prev.map(msg => {
+            if (msg.isMine && !msg.isRead && data.messageIds.includes(msg.id)) {
+              console.log('[useChat] 메시지 읽음 상태 업데이트:', msg.id);
+              return { ...msg, isRead: true };
+            }
+            return msg;
+          })
+        );
+      } else if (data.userId) {
+        // 이전 버전 호환성
+        fetchMessages({ force: true, silent: true });
+      }
+    };
+    
+    // 읽음 상태 이벤트 등록
+    socketRef.current.on('messageRead', messageReadHandler);
+    
+    // 이벤트 콜백 확인
+    console.log('[useChat] 읽음 상태 이벤트 리스너 등록 완료');
+    
+    return () => {
+      console.log('[useChat] 읽음 상태 이벤트 리스너 제거');
+      if (socketRef.current) {
+        socketRef.current.off('messageRead', messageReadHandler);
+      }
+    };
+  }, [socketConnected, roomId, fetchMessages]);
 
   // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
   useEffect(() => {
@@ -858,7 +1096,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     if (!useHttpPolling || !isPollingActiveRef.current) return;
     
     console.log('[useChat] HTTP 폴링으로 메시지 가져오기...');
-    fetchMessages({ force: true })
+    fetchMessages({ force: true, silent: true })
       .catch(err => {
         console.error('[useChat] 폴링 중 메시지 로드 실패:', err);
       })
@@ -1031,23 +1269,167 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     }, pollingIntervalRef.current);
   }, [actualUserId, transactionId, otherUserId, lastMessageId, messages.length]);
 
-  // 페이지/컴포넌트가 마운트되었을 때 폴링 시작
+  // 페이지/컴포넌트가 마운트되었을 때 폴링 시작 - 폴링 메커니즘 개선
   useEffect(() => {
     if (actualUserId && transactionId) {
       console.log('[useChat] 폴링 시작');
       isPollingActiveRef.current = true;
+      
+      // 매 5초마다 강제로 폴링 실행 (소켓 연결 상태와 무관하게) - silent 모드로 로딩 표시 없이 실행
+      const forcedPollingTimer = setInterval(() => {
+        console.log('[useChat] 강제 폴링 실행...');
+        fetchMessages({ force: true, silent: true })
+          .catch(err => console.error('[useChat] 강제 폴링 실패:', err));
+      }, pollingIntervalRef.current);
+      
+      // 초기 로딩
       startPolling();
+      
+      return () => {
+        // 컴포넌트 언마운트 시 폴링 중지
+        console.log('[useChat] 폴링 중지 및 타이머 정리');
+        isPollingActiveRef.current = false;
+        
+        clearInterval(forcedPollingTimer);
+        
+        if (pollingTimerRef.current) {
+          clearTimeout(pollingTimerRef.current);
+        }
+      };
+    }
+  }, [actualUserId, transactionId, startPolling, fetchMessages]);
+
+  // 채팅 인터페이스 활성화 시 자동으로 메시지를 읽음 상태로 표시
+  useEffect(() => {
+    if (roomId && messages.length > 0 && !isLoading) {
+      // 내 메시지가 아니고 읽지 않은 메시지가 있는지 확인
+      const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
+      
+      if (hasUnreadMessages) {
+        markMessagesAsRead().catch(err => {
+          console.error('[useChat] 자동 읽음 표시 실패:', err);
+        });
+      }
+    }
+  }, [roomId, messages, isLoading, markMessagesAsRead]);
+
+  // roomId가 설정되는지 추적하는 useEffect 추가
+  useEffect(() => {
+    console.log('[useChat] roomId 변경됨:', roomId);
+  }, [roomId]);
+
+  // 주기적인 메시지 폴링 함수 추가
+  const fetchMessagesFromAPI = useCallback(async (roomId: string, userId: string) => {
+    try {
+      // HTTP API를 통해 메시지 가져오기
+      const params = new URLSearchParams();
+      if (transactionId) {
+        params.append('purchaseId', transactionId);
+      }
+      if (otherUserId) {
+        params.append('conversationWith', otherUserId);
+      }
+      
+      // 캐시 방지용 타임스탬프
+      params.append('_t', Date.now().toString());
+      
+      const authToken = getAuthToken();
+      const response = await fetch(`/api/messages?${params.toString()}`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`메시지 가져오기 실패: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('[useChat] API에서 메시지 가져오기 실패:', error);
+      return null;
+    }
+  }, [transactionId, otherUserId]);
+
+  // 메시지 형식 변환 함수
+  const transformMessages = useCallback((messagesData: any[], userId: string): Message[] => {
+    return messagesData.map((msg: any) => ({
+      id: msg.id,
+      senderId: String(msg.senderId),
+      receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
+      text: msg.content,
+      timestamp: msg.createdAt,
+      isMine: String(msg.senderId) === userId,
+      status: 'sent',
+      isRead: msg.isRead
+    }));
+  }, []);
+
+  // 메시지 변경 감지용 해시 계산 함수
+  const calculateMessagesHash = useCallback((messages: Message[]): string => {
+    return messages.map(m => `${m.id}:${m.isRead}`).join('|');
+  }, []);
+
+  // 이전 메시지 해시값 저장용 ref (useEffect 외부로 이동)
+  const prevMessagesHashRef = useRef<string>('');
+
+  // 주기적인 메시지 체크 로직 구현
+  useEffect(() => {
+    // 최초 렌더링 시 해시값 초기화
+    prevMessagesHashRef.current = calculateMessagesHash(messages);
+    
+    let pollingInterval: NodeJS.Timeout | null = null;
+    
+    // roomId가 있을 때만 폴링 설정
+    if (roomId && actualUserId) {
+      console.log('[useChat] 메시지 감지 타이머 설정');
+      
+      pollingInterval = setInterval(async () => {
+        // 소켓이 연결된 상태에서는 폴링 안함
+        if (socketConnected && socketRef.current?.connected) {
+          return;
+        }
+        
+        // 업데이트 중이면 중복 요청 방지
+        if (isUpdatingRef.current) return;
+        
+        isUpdatingRef.current = true;
+        
+        try {
+          const response = await fetchMessagesFromAPI(roomId, actualUserId);
+          if (!response || !response.success) return;
+          
+          const fetchedMessages = transformMessages(response.messages, actualUserId);
+          const newMessagesHash = calculateMessagesHash(fetchedMessages);
+          
+          // 변경이 있을 때만 상태 업데이트
+          if (newMessagesHash !== prevMessagesHashRef.current) {
+            console.log('[useChat] 메시지 변경 감지, 상태 업데이트 중');
+            setMessages(fetchedMessages);
+            prevMessagesHashRef.current = newMessagesHash;
+            
+            // 새 메시지가 있는지 확인
+            const hasNewMessages = fetchedMessages.length > messages.length;
+            if (hasNewMessages) {
+              // 스크롤 이벤트 트리거
+              triggerScrollToBottom(true);
+            }
+          }
+        } catch (error) {
+          console.error('[useChat] 메시지 감지 오류:', error);
+        } finally {
+          isUpdatingRef.current = false;
+        }
+      }, 5000); // 5초마다 폴링 (소켓 연결이 없을 때)
     }
     
     return () => {
-      // 컴포넌트 언마운트 시 폴링 중지
-      console.log('[useChat] 폴링 중지');
-      isPollingActiveRef.current = false;
-      if (pollingTimerRef.current) {
-        clearTimeout(pollingTimerRef.current);
+      if (pollingInterval) {
+        console.log('[useChat] 메시지 감지 타이머 정리');
+        clearInterval(pollingInterval);
       }
     };
-  }, [actualUserId, transactionId, startPolling]);
+  }, [roomId, actualUserId, socketConnected, messages, calculateMessagesHash, transformMessages, fetchMessagesFromAPI, triggerScrollToBottom]);
 
   // 훅 반환 객체
   return {
@@ -1061,6 +1443,7 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     transactionInfo,
     otherUserInfo,
     conversations,
-    hasMore
+    hasMore,
+    markMessagesAsRead
   };
 } 
