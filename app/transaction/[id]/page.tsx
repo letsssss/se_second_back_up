@@ -345,7 +345,7 @@ export default function TransactionDetail() {
             paymentMethod: purchaseData.purchase?.paymentMethod || "신용카드", // 결제 방식 정보 없을 경우 기본값
             paymentStatus: "결제 완료",
             ticketingStatus: getTicketingStatusText(purchaseData.purchase?.status || ""),
-            ticketingInfo: "취소표 발생 시 알림을 보내드립니다. 취소표 발생 시 빠르게 예매를 진행해 드립니다.",
+            ticketingInfo: "취소표 발생 시 알림을 보내드립니다. 취소표 발생 시 빠르게 예매를 진행해 드립니다. 취켓팅 완료 이후 아래의 취켓팅 완료하기 버튼을 눌러주세요.",
             seller: {
               id: purchaseData.purchase?.seller?.id?.toString() || "",
               name: purchaseData.purchase?.seller?.name || "판매자",
@@ -1006,7 +1006,7 @@ export default function TransactionDetail() {
                 status={transaction?.currentStep === "COMPLETED" ? "completed" : "in_progress"}
                 message={transaction?.currentStep === "COMPLETED" 
                   ? "취켓팅이 완료되었습니다. 판매자가 성공적으로 티켓을 구매했습니다. 아래 버튼을 눌러 구매를 확정해주세요." 
-                  : (transaction?.ticketingInfo || "취켓팅 진행 중입니다.")}
+                  : " 취켓팅 완료 이후, 아래의 취켓팅 완료하기 버튼을 눌러주세요."}
                 updatedAt={transaction?.currentStep === "COMPLETED"
                   ? (transaction?.stepDates?.ticketing_completed 
                     ? new Date(transaction.stepDates.ticketing_completed).toLocaleString() 
