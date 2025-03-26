@@ -1,18 +1,22 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import Image from "next/image"
-import { ArrowLeft, Calendar, MapPin, Clock, CreditCard, Play, ThumbsUp, CheckCircle, Star } from "lucide-react"
+import { ArrowLeft, Calendar, MapPin, Clock, CreditCard, Play, ThumbsUp, CheckCircle, Star, Sparkles, Award } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import dynamic from 'next/dynamic'
+import { motion, AnimatePresence } from "framer-motion"
 
 // Confetti를 동적으로 불러오기 (서버 사이드 렌더링 오류 방지)
 const ReactConfetti = dynamic(() => import('react-confetti'), { 
   ssr: false,
   loading: () => null
 })
+
+// 캔버스 confetti 효과를 함수로 불러오기
+import canvasConfetti from 'canvas-confetti'
 
 import { Button } from "@/components/ui/button"
 import { TransactionStepper } from "@/components/transaction-stepper"
@@ -77,6 +81,9 @@ export default function TransactionDetail() {
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 })
   const [confettiRunning, setConfettiRunning] = useState(false)
   
+  // 성공 모달 상태 추가
+  const [showSuccessModal, setShowSuccessModal] = useState(false)
+  
   // 브라우저 환경 확인 상태
   const [isBrowser, setIsBrowser] = useState(false)
   
@@ -96,32 +103,13 @@ export default function TransactionDetail() {
     error: chatError
   } = useChat(chatReady ? chatProps : null)
 
-  // 채팅 디버깅을 위한 로그 추가
-  useEffect(() => {
-    console.log('구매자 채팅 상태:', {
-      transactionId: params?.id,
-      buyerId: currentUserId,
-      socketConnected,
-      hasMessages: messages.length > 0,
-      otherUserId: currentUserRole === 'buyer' ? transaction?.seller?.id : transaction?.buyer?.id
-    });
-  }, [params?.id, currentUserId, socketConnected, messages.length, currentUserRole, transaction?.seller?.id, transaction?.buyer?.id]);
-
-  // 메시지 전송 핸들러에 추가 로깅 추가
+  // 메시지 전송 핸들러 함수 (ChatInterface에서 사용)
   const handleSendMessage = async (content: string): Promise<boolean> => {
     if (!content || !content.trim()) return false;
     
     try {
-      console.log('구매자 메시지 전송 시도:', {
-        content,
-        buyerId: currentUserId,
-        sellerId: currentUserRole === 'buyer' ? transaction?.seller?.id : transaction?.buyer?.id,
-        transactionId: params?.id
-      });
-      
       // 직접 sendMessage 함수 호출
       const result = await sendMessage(content);
-      console.log('메시지 전송 결과:', result);
       
       if (!result) {
         toast({
@@ -132,7 +120,7 @@ export default function TransactionDetail() {
         return false;
       }
       
-      await fetchMessages(); // 새 메시지 전송 후 다시 불러오기 추가
+      await fetchMessages(); // 새 메시지 전송 후 다시 불러오기
       return true;
     } catch (error) {
       console.error('메시지 전송 오류:', error);
@@ -144,6 +132,29 @@ export default function TransactionDetail() {
       return false;
     }
   };
+
+  // 브라우저 환경 설정 및 창 크기 측정
+  useEffect(() => {
+    setIsBrowser(true)
+    
+    // 창 크기 측정
+    const updateWindowSize = () => {
+      setWindowSize({ 
+        width: window.innerWidth, 
+        height: window.innerHeight 
+      })
+    }
+    
+    // 초기 설정
+    updateWindowSize()
+    
+    // 리사이즈 이벤트 리스너 추가
+    window.addEventListener('resize', updateWindowSize)
+    
+    return () => {
+      window.removeEventListener('resize', updateWindowSize)
+    }
+  }, [])
 
   // 페이지 로드 시 거래 정보 가져오기 및 상태 자동 변경
   useEffect(() => {
@@ -372,31 +383,6 @@ export default function TransactionDetail() {
     fetchTransactionData();
   }, [params?.id, toast]);
 
-  // 클라이언트 측에서만 윈도우 크기 설정 및 브라우저 환경 확인
-  useEffect(() => {
-    // 브라우저 환경임을 표시
-    setIsBrowser(true)
-    
-    // 윈도우 크기 설정
-    if (typeof window !== 'undefined') {
-      const updateWindowSize = () => {
-        setWindowSize({
-          width: window.innerWidth,
-          height: window.innerHeight
-        })
-      }
-      
-      // 초기 윈도우 크기 설정
-      updateWindowSize()
-      
-      // 리사이즈 이벤트 리스너 추가
-      window.addEventListener('resize', updateWindowSize)
-      
-      // 클린업 함수에서 이벤트 리스너 제거
-      return () => window.removeEventListener('resize', updateWindowSize)
-    }
-  }, [])
-
   // 상태 텍스트 변환 함수
   function getStatusText(status: string): string {
     switch (status) {
@@ -419,7 +405,7 @@ export default function TransactionDetail() {
     }
   }
 
-  // 상태 변경 함수 추가
+  // 상태 변경 함수 개선
   const handleStatusChange = async (newStatus: string) => {
     if (!transaction || !params?.id || isSubmitting) return;
     
@@ -455,10 +441,46 @@ export default function TransactionDetail() {
       const data = await response.json();
       console.log('상태 변경 성공:', data);
       
-      // CONFIRMED 상태로 변경 성공했을 때 confetti 표시 (브라우저 환경에서만)
+      // CONFIRMED 상태로 변경 성공했을 때 화려한 효과들 표시
       if (newStatus === 'CONFIRMED' && isBrowser) {
+        // Confetti 실행
         setConfettiRunning(true)
         setShowConfetti(true)
+        
+        // 축하 모달 표시
+        setShowSuccessModal(true)
+        
+        // 추가 캔버스 효과 실행 (화면 중앙에서 퍼지는 효과)
+        try {
+          // 첫 번째 폭발
+          canvasConfetti({
+            particleCount: 100,
+            spread: 70,
+            origin: { y: 0.6 }
+          });
+          
+          // 0.3초 후 두 번째 폭발
+          setTimeout(() => {
+            canvasConfetti({
+              particleCount: 50,
+              angle: 60,
+              spread: 55,
+              origin: { x: 0.2, y: 0.6 }
+            });
+          }, 300);
+          
+          // 0.6초 후 세 번째 폭발
+          setTimeout(() => {
+            canvasConfetti({
+              particleCount: 50,
+              angle: 120,
+              spread: 55,
+              origin: { x: 0.8, y: 0.6 }
+            });
+          }, 600);
+        } catch (e) {
+          console.error('캔버스 효과 오류:', e);
+        }
         
         // 성공 메시지 강조 표시
         toast({
@@ -468,10 +490,16 @@ export default function TransactionDetail() {
           duration: 5000,
         });
         
-        // 5초 후에 confetti 제거
+        // 7초 후에 confetti 제거
         setTimeout(() => {
           setShowConfetti(false)
-        }, 5000)
+          setConfettiRunning(false)
+        }, 7000)
+        
+        // 10초 후에 모달 제거
+        setTimeout(() => {
+          setShowSuccessModal(false)
+        }, 10000)
       } else {
         // 다른 상태에 대한 일반 성공 메시지
         toast({
@@ -481,7 +509,9 @@ export default function TransactionDetail() {
       }
       
       // 페이지 새로고침
-      window.location.reload();
+      setTimeout(() => {
+        window.location.reload();
+      }, 3000);
     } catch (error) {
       console.error('상태 변경 오류:', error);
       toast({
@@ -715,11 +745,84 @@ export default function TransactionDetail() {
         <ReactConfetti
           width={windowSize.width}
           height={windowSize.height}
-          numberOfPieces={confettiRunning ? 300 : 0}
+          numberOfPieces={confettiRunning ? 500 : 0}
           recycle={false}
-          colors={['#0061FF', '#FFD600', '#60A5FA', '#34D399', '#F59E0B']}
+          tweenDuration={8000}
+          gravity={0.15}
+          colors={['#0061FF', '#FFD600', '#60A5FA', '#34D399', '#F59E0B', '#EC4899', '#8B5CF6']}
         />
       )}
+      
+      {/* 성공 축하 모달 */}
+      <AnimatePresence>
+        {showSuccessModal && (
+          <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/20 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ type: "spring", damping: 15 }}
+              className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 text-center relative overflow-hidden"
+            >
+              <motion.div
+                initial={{ y: -20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.3 }}
+                className="absolute -top-10 -left-10 w-32 h-32 bg-blue-500/10 rounded-full"
+              />
+              <motion.div
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.4 }}
+                className="absolute -bottom-12 -right-12 w-40 h-40 bg-yellow-500/10 rounded-full"
+              />
+              
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1, rotate: [0, 15, 0, -15, 0] }}
+                transition={{ delay: 0.5, duration: 1 }}
+                className="w-24 h-24 bg-blue-500 rounded-full mx-auto flex items-center justify-center mb-6"
+              >
+                <Award className="w-12 h-12 text-white" />
+              </motion.div>
+              
+              <motion.h2 
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.7 }}
+                className="text-2xl font-bold text-gray-900 mb-3"
+              >
+                구매 확정 완료!
+              </motion.h2>
+              
+              <motion.p
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.9 }}
+                className="text-gray-600 mb-8"
+              >
+                성공적으로 거래가 완료되었습니다. <br />
+                즐거운 공연 관람 되세요!
+              </motion.p>
+              
+              <motion.div
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 1.1 }}
+              >
+                <Button 
+                  onClick={() => setShowSuccessModal(false)}
+                  className="bg-gradient-to-r from-blue-600 to-blue-500 text-white px-8 py-3 rounded-full 
+                           hover:shadow-lg transition-all duration-300 hover:scale-105"
+                >
+                  <Sparkles className="w-5 h-5 mr-2" />
+                  확인했어요
+                </Button>
+              </motion.div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     
       <header className="bg-white shadow-sm">
         <div className="container mx-auto px-4 py-6">
