@@ -38,6 +38,13 @@ export function ChatInterface({
   const lastUnreadCountRef = useRef<number>(0);
   // 초기 로딩 상태를 추적하는 state 추가
   const [initialLoading, setInitialLoading] = useState(true);
+  // 입력 타이머 추적
+  const inputTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 마지막 입력 시간
+  const lastInputTimeRef = useRef<number>(0);
+  // 입력 관련 상태 및 참조 추가
+  const minimumInputDelayRef = useRef<number>(300); // 최소 입력 지연 시간 (300ms)
+  const inputValueRef = useRef<string>('');
 
   // 메시지가 로드되면 초기 로딩 상태를 false로 설정
   useEffect(() => {
@@ -60,8 +67,23 @@ export function ChatInterface({
       hasMarkAsReadFunction: !!onMarkAsRead
     });
     
-    if (hasUnreadMessages && onMarkAsRead) {
-      console.log('[ChatInterface] 읽음 처리 함수 호출 시도');
+    // 읽을 메시지가 없으면 함수 실행 안함
+    if (!hasUnreadMessages) {
+      console.log('[ChatInterface] 읽을 메시지가 없어서 읽음 처리 건너뜀');
+      return;
+    }
+    
+    // 읽음 처리 함수가 없으면 실행 안함
+    if (!onMarkAsRead) {
+      console.log('[ChatInterface] 읽음 처리 함수가 제공되지 않음');
+      return;
+    }
+    
+    // 메시지가 있고 처리 함수가 있는 경우에만
+    console.log('[ChatInterface] 읽음 처리 함수 호출 시도');
+    
+    // 딜레이를 준 후 실행 (roomId와 userId가 설정될 시간을 줌)
+    setTimeout(() => {
       onMarkAsRead().then(result => {
         console.log('[ChatInterface] 읽음 처리 결과:', result);
         // 읽음 처리 후 메시지 상태를 강제로 확인
@@ -70,8 +92,77 @@ export function ChatInterface({
       }).catch(err => {
         console.error('[ChatInterface] 읽음 표시 실패:', err);
       });
-    }
+    }, 500); // 0.5초 딜레이
   }, [messages, onMarkAsRead]);
+
+  // 입력 상태 변경 처리
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    // 현재 시간 기록
+    const now = Date.now();
+    const value = e.target.value;
+    
+    // 입력 값 참조에 저장
+    inputValueRef.current = value;
+    
+    // 값 즉시 업데이트 (UI 반응성 유지)
+    setNewMessage(value);
+    
+    // 마지막 입력 시간과 현재 시간의 차이가 최소 입력 지연 시간보다 작으면 타이머 리셋만 함
+    // 이렇게 하면 빠르게 타이핑할 때 이벤트가 너무 자주 발생하는 것을 방지
+    const timeSinceLastInput = now - lastInputTimeRef.current;
+    if (timeSinceLastInput < minimumInputDelayRef.current) {
+      // 기존 타이머 취소
+      if (inputTimerRef.current) {
+        clearTimeout(inputTimerRef.current);
+        inputTimerRef.current = null;
+      }
+      
+      // 새 타이머 설정 (지연 발송)
+      inputTimerRef.current = setTimeout(() => {
+        dispatchTypingEvent(true, inputValueRef.current);
+        inputTimerRef.current = null;
+      }, minimumInputDelayRef.current);
+      
+      return;
+    }
+    
+    // 최소 지연 시간 이후의 입력이면 시간 기록 및 타이핑 이벤트 발생
+    lastInputTimeRef.current = now;
+    
+    // 기존 타이머 취소
+    if (inputTimerRef.current) {
+      clearTimeout(inputTimerRef.current);
+      inputTimerRef.current = null;
+    }
+    
+    // 타이핑 중 이벤트 발생
+    dispatchTypingEvent(true, value);
+    
+    // 타이핑 종료 지연 타이머 설정 (5초로 확장)
+    inputTimerRef.current = setTimeout(() => {
+      console.log('[ChatInterface] 타이핑 종료 이벤트 발생');
+      dispatchTypingEvent(false, value);
+      inputTimerRef.current = null;
+    }, 5000); // 5초 동안 입력이 없으면 타이핑 종료로 간주
+  }, []);
+  
+  // 타이핑 이벤트 발송 함수 분리 (재사용성 및 일관성)
+  const dispatchTypingEvent = useCallback((isTyping: boolean, inputValue: string) => {
+    if (typeof window !== 'undefined') {
+      console.log(`[ChatInterface] ${isTyping ? '타이핑 중' : '타이핑 종료'} 이벤트 발생`, { 
+        timestamp: Date.now(),
+        inputLength: inputValue.length
+      });
+      
+      window.dispatchEvent(new CustomEvent('chat:typing', {
+        detail: { 
+          isTyping, 
+          timestamp: Date.now(),
+          inputValue
+        }
+      }));
+    }
+  }, []);
 
   // 메시지 전송 처리
   const handleSendMessage = async () => {
@@ -80,6 +171,16 @@ export function ChatInterface({
     setIsSending(true);
     const messageContent = newMessage;
     setNewMessage(''); // 즉시 입력창 클리어
+    inputValueRef.current = ''; // 참조 값도 클리어
+    
+    // 타이핑 종료 이벤트 즉시 발송
+    dispatchTypingEvent(false, '');
+    
+    // 기존 타이머 취소
+    if (inputTimerRef.current) {
+      clearTimeout(inputTimerRef.current);
+      inputTimerRef.current = null;
+    }
     
     try {
       await onSendMessage(messageContent);
@@ -134,7 +235,7 @@ export function ChatInterface({
       // 현재 읽지 않은 메시지 수로 ref 업데이트
       lastUnreadCountRef.current = messages.filter(msg => !msg.isMine && !msg.isRead).length;
       
-      // 주기적으로 메시지 확인 및 읽음 처리
+      // 주기적으로 메시지 확인 및 읽음 처리 (15초로 늘림)
       const checkInterval = setInterval(() => {
         // 현재 읽지 않은 메시지 수 계산
         const currentUnreadCount = messages.filter(msg => !msg.isMine && !msg.isRead).length;
@@ -146,7 +247,7 @@ export function ChatInterface({
           // 마지막으로 확인한 읽지 않은 메시지 수 업데이트
           lastUnreadCountRef.current = currentUnreadCount;
         }
-      }, 5000); // 5초마다 확인 (더 낮은 빈도로 변경)
+      }, 15000); // 15초마다 확인으로 변경
       
       return () => {
         console.log('[ChatInterface] 주기적 메시지 확인 타이머 정리');
@@ -318,7 +419,7 @@ export function ChatInterface({
             <input
               type="text"
               value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
+              onChange={handleInputChange}
               onKeyPress={handleKeyPress}
               placeholder="메시지를 입력하세요..."
               disabled={isSending}

@@ -161,9 +161,12 @@ export default function SearchResults() {
                     </div>
                     <div className="flex items-center text-sm text-gray-500 mb-2">
                       <span>판매자:</span>
-                      <Link
-                        href={`/seller/${item.author.id}`}
-                        className="ml-1 text-blue-600 hover:underline flex items-center"
+                      <span
+                        onClick={(e) => {
+                          e.preventDefault();
+                          window.location.href = `/seller/${item.author.id}`;
+                        }}
+                        className="ml-1 text-blue-600 hover:underline flex items-center cursor-pointer"
                       >
                         {item.author.name}
                         <div className="flex items-center ml-2 text-yellow-500">
@@ -183,7 +186,7 @@ export default function SearchResults() {
                           </svg>
                           <span className="text-xs">4.5</span>
                         </div>
-                      </Link>
+                      </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="font-medium text-black">{Number(item.ticketPrice || 0).toLocaleString()}원</span>

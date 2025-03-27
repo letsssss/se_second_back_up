@@ -140,10 +140,30 @@ export default function TransactionDetail() {
       chatReady,
       chatProps,
       hasChatProps: !!chatProps,
-      socketConnected
+      socketConnected,
+      transaction: transaction ? {
+        id: transaction.id,
+        status: transaction.status
+      } : null,
+      userId: currentUserId
     });
     
+    // 채팅 관련 props나 markMessagesAsRead 함수가 없는 경우
+    if (!chatProps?.markMessagesAsRead) {
+      console.warn('[트랜잭션 페이지] 메시지 읽음 처리 함수가 제공되지 않음');
+      return false;
+    }
+    
     try {
+      // 함수 호출 시점의 사용자 ID 로깅
+      const userIdFromStorage = typeof window !== 'undefined' ? 
+        (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user') || '{}').id : null) : null;
+      
+      console.log('[트랜잭션 페이지] 메시지 읽음 처리 시작, 현재 사용자 ID:', {
+        fromState: currentUserId,
+        fromStorage: userIdFromStorage
+      });
+      
       const result = await markMessagesAsRead();
       console.log('[트랜잭션 페이지] markMessagesAsRead 호출 결과:', result);
       return result;

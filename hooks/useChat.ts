@@ -26,6 +26,7 @@ export interface Message {
   isMine: boolean;
   status?: 'sending' | 'sent' | 'failed';
   isRead?: boolean;
+  roomId?: string;
 }
 
 // useChat 훅의 옵션
@@ -84,11 +85,25 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   // 마지막 메시지 ID를 저장하는 상태 추가
   const [lastMessageId, setLastMessageId] = useState<string | null>(null);
   // 폴링 간격을 저장하는 ref (ms 단위)
-  const pollingIntervalRef = useRef<number>(3000); // 기본값 3초로 단축
+  const pollingIntervalRef = useRef<number>(30000); // 30초 유지
   // 폴링 타이머 ID를 저장하는 ref
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   // 활성 폴링 여부를 저장하는 ref
   const isPollingActiveRef = useRef<boolean>(true);
+  
+  // 요청 추적용 레퍼런스
+  const isRequestInProgressRef = useRef<boolean>(false);
+  const lastRequestTimeRef = useRef<number>(0);
+  const requestLimitTimeRef = useRef<number>(5000); // 요청 빈도 제한 (5초)
+  
+  // 사용자 타이핑 상태 추적 개선
+  const isUserTypingRef = useRef<boolean>(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTypingEventTimeRef = useRef<number>(0);
+  const typingCooldownRef = useRef<number>(15000); // 타이핑 후 API 요청을 대기하는 시간 (15초)
+  
+  // 타이핑 차단 기능 활성화 변수 (타이핑 중 모든 API 요청 차단)
+  const isTypingBlockingRef = useRef<boolean>(true);
   
   // 폴링 전환 여부를 추적하는 상태 추가
   const [useHttpPolling, setUseHttpPolling] = useState<boolean>(false);
@@ -105,6 +120,9 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   
   // 메시지 자동 업데이트 요청 중인지 추적하는 플래그 ref
   const isUpdatingRef = useRef<boolean>(false);
+  
+  // 이미 처리한 클라이언트 메시지 ID 추적을 위한 ref
+  const clientMessageIds = useRef<Set<string>>(new Set());
   
   // 사용자 ID를 localStorage에서 가져오기
   const [actualUserId, setActualUserId] = useState<string | null>(null);
@@ -164,265 +182,29 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     console.log('[useChat] 사용자 ID 설정:', id);
   }, [userId, options]);
 
-  // Socket.io 서버 설정 및 연결 관리
-  const setupSocket = useCallback(() => {
-    if (!actualUserId) {
-      console.log('[useChat] 사용자 ID가 없음, 연결 중단');
-      return;
-    }
-
-    // 이미 소켓이 존재하고 연결된 경우 스킵
-    if (socketRef.current && socketRef.current.connected) {
-      console.log('[useChat] 이미 연결된 소켓 존재');
-      return;
-    }
-
-    console.log('[useChat] 소켓 연결 설정 시작');
+  // 소켓 및 타이머 관리를 위한 Ref 추가
+  const socketInitializedRef = useRef(false);
+  const roomJoinedRef = useRef(false);
+  const handlerCountRef = useRef(0); // 디버깅용 핸들러 호출 카운터
+  
+  // 소켓 이벤트 핸들러 등록 전 모든 이벤트 리스너 제거
+  const unregisterAllSocketEvents = useCallback((socket: Socket) => {
+    if (!socket) return;
     
-    try {
-      // 적절한 소켓 서버 URL 결정
-      const socketURL = 
-        process.env.NEXT_PUBLIC_SOCKET_URL || 
-        (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
-      
-      console.log(`[useChat] 소켓 서버 URL: ${socketURL}`);
-      
-      // Socket.io 인스턴스 생성 및 옵션 설정
-      const socket = io(socketURL, {
-        transports: ['websocket', 'polling'],
-        reconnectionAttempts: 10,
-        reconnectionDelay: 1000,
-        timeout: 30000,
-        forceNew: connectionAttempts.current > 0,
-        autoConnect: true,
-        reconnection: true,
-        withCredentials: true,
-        query: {
-          userId: actualUserId,
-          transactionId: transactionId || ''
-        }
-      });
-      
-      socketRef.current = socket;
-      
-      // 소켓 이벤트 리스너 설정
-      socket.on('connect', () => {
-        console.log('[useChat] 소켓 연결 성공:', socket.id);
-        setSocketConnected(true);
-        setError(null);
-        connectionAttempts.current = 0;
-        
-        // 연결 성공 시 채팅방 참가
-        if (transactionId) {
-          console.log('[useChat] 채팅방 참가 요청:', {
-            purchaseId: transactionId,
-            userId: actualUserId,
-            userRole
-          });
-          
-          socket.emit('createOrJoinRoom', {
-            purchaseId: transactionId,
-            userId: actualUserId,
-            userRole
-          });
-        }
-      });
-      
-      // 연결 오류 처리
-      socket.on('connect_error', (err) => {
-        console.error('[useChat] 소켓 연결 오류:', err.message);
-        console.error('[useChat] 소켓 연결 오류 상세:', err);
-        setError(`연결 오류: ${err.message}`);
-        setSocketConnected(false);
-        
-        // 연결 시도 횟수 증가 및 제한 확인
-        connectionAttempts.current += 1;
-        if (connectionAttempts.current >= 5) {
-          console.error('[useChat] 최대 연결 시도 횟수 초과, 연결 중단');
-          socket.disconnect();
-          
-          // HTTP API 폴백으로 전환
-          switchToHttpPolling();
-        }
-      });
-      
-      // 연결 해제 처리
-      socket.on('disconnect', (reason) => {
-        console.log('[useChat] 소켓 연결 해제:', reason);
-        setSocketConnected(false);
-        if (reason === 'io server disconnect') {
-          // 서버에서 연결을 끊은 경우 수동으로 재연결 시도
-          setTimeout(() => {
-            if (socketRef.current) {
-              console.log('[useChat] 서버 연결 해제 후 재연결 시도');
-              socketRef.current.connect();
-            }
-          }, 1000);
-        }
-      });
-
-      // 메시지 수신 이벤트
-      socket.on('message', (newMessage) => {
-        console.log('[useChat] 새 메시지 수신:', newMessage);
-        if (newMessage) {
-          setMessages((prevMessages) => {
-            // 이미 존재하는 메시지인지 확인
-            const isDuplicate = prevMessages.some(
-              (msg) => msg.id === newMessage.id
-            );
-            
-            if (isDuplicate) {
-              return prevMessages;
-            }
-            
-            // 새로운 메시지 형식 변환 및 추가
-            const formattedMessage: Message = {
-              id: newMessage.id,
-              senderId: newMessage.senderId?.toString() || newMessage.userId?.toString() || '',
-              text: newMessage.content || newMessage.text || '',
-              timestamp: newMessage.createdAt || newMessage.timestamp || new Date().toISOString(),
-              isMine: Number(newMessage.senderId || newMessage.userId) === Number(actualUserId),
-              status: 'sent'
-            };
-            
-            return [...prevMessages, formattedMessage];
-          });
-        }
-      });
-
-      // 메시지 전송 결과 이벤트 (메시지 상태 업데이트)
-      socket.on('messageSent', (data) => {
-        console.log('메시지 전송 결과:', data);
-        // 임시 메시지의 상태 업데이트
-        if (data && data.messageId) {
-          if (data.status === 'sent' || data.status === 'success') {
-            // 성공적으로 전송된 메시지 상태 업데이트
-            updateMessageStatus(
-              data.clientId || data.messageId, 
-              'sent', 
-              data.messageId
-            );
-            console.log('메시지 전송 성공:', data.messageId);
-          } else if (data.status === 'failed') {
-            // 실패한 메시지 상태 업데이트
-            updateMessageStatus(
-              data.clientId || data.messageId, 
-              'failed'
-            );
-            console.error('메시지 전송 실패:', data.error || '알 수 없는 오류');
-          }
-        }
-      });
-      
-      // 채팅방 참가 결과 이벤트
-      socket.on('roomJoined', (data) => {
-        console.log('채팅방 참가 결과:', data);
-        if (data && data.messages && Array.isArray(data.messages)) {
-          const formattedMessages = data.messages.map((msg: any) => ({
-            id: msg.id,
-            senderId: Number(msg.senderId),
-            text: msg.content,
-            timestamp: msg.createdAt || msg.timestamp,
-            isMine: Number(msg.senderId) === Number(actualUserId),
-            status: 'sent'
-          }));
-          setMessages(formattedMessages);
-        }
-      });
-      
-      // 채팅 기록 이벤트
-      socket.on('chatHistory', (data) => {
-        console.log('채팅 기록 수신:', data);
-        if (data && data.messages && Array.isArray(data.messages)) {
-          const formattedMessages = data.messages.map((msg: any) => ({
-            id: msg.id,
-            senderId: Number(msg.senderId || msg.user?.id),
-            text: msg.content,
-            timestamp: msg.createdAt || msg.timestamp,
-            isMine: Number(msg.senderId || msg.user?.id) === Number(actualUserId),
-            status: 'sent'
-          }));
-          setMessages(formattedMessages);
-        }
-      });
-      
-      // 소켓 오류 이벤트
-      socket.on('socketError', (error) => {
-        console.error('소켓 오류:', error);
-      });
-      
-      // 재연결 시도 이벤트
-      socket.on('reconnect_attempt', (attemptNumber) => {
-        console.log(`재연결 시도 ${attemptNumber}번째...`);
-      });
-      
-      // 재연결 성공 이벤트
-      socket.on('reconnect', (attemptNumber) => {
-        console.log(`재연결 성공! (${attemptNumber}번째 시도)`);
-        setSocketConnected(true);
-        
-        // 재연결 후 채팅방 재참가
-        console.log('재연결 후 채팅방 재참가 시도');
-        socket.emit('createOrJoinRoom', {
-          purchaseId: transactionId,
-          userId: actualUserId,
-          userRole: userRole
-        });
-      });
-      
-      // 오류 이벤트
-      socket.on('error', (error) => {
-        const errorInfo = error ? 
-          (typeof error === 'object' ? JSON.stringify(error, null, 2) : error) : 
-          '알 수 없는 오류';
-        console.error('Socket.io 오류 발생:', errorInfo);
-        
-        // 소켓 오류가 발생해도 메시지 로드 시도
-        if ((errorInfo.includes('인증') || errorInfo.includes('auth')) && !isLoading) {
-          console.log('인증 오류 발생으로 HTTP API 통해 메시지 로드 시도');
-          fetchMessages({ force: true }).catch(err => 
-            console.error('메시지 로드 실패:', err)
-          );
-        }
-      });
-
-      // 재연결 실패 이벤트
-      socket.on('reconnect_failed', () => {
-        console.error('Socket.io 재연결 실패');
-        setSocketConnected(false);
-        
-        // 재연결 실패 시 다시 연결 시도
-        console.log('재연결 완전 실패 후 소켓 재생성 시도...');
-        setTimeout(setupSocket, 2000);
-      });
-    } catch (socketInitError: any) {
-      console.error('[useChat] 소켓 연결 생성 중 오류:', socketInitError);
-      console.error('[useChat] 오류 상세:', socketInitError.message || '알 수 없는 오류');
-      setError('소켓 연결 실패: ' + (socketInitError.message || '서버에 연결할 수 없습니다'));
-      
-      // 지연된 API 호출로 변경
-      setTimeout(() => {
-        console.log('[useChat] 소켓 연결 실패 후 HTTP API로 메시지 가져오기 시도');
-        // fetchMessages 호출 대신 상태만 변경
-        setIsLoading(true);
-      }, 1000);
-    }
-  }, [actualUserId, transactionId, otherUserId, userRole]);
-
-  // 소켓 연결 설정 useEffect 제거하고 actualUserId 변경 시 소켓 설정 실행하는 useEffect만 유지
-  useEffect(() => {
-    if (actualUserId) {
-      setupSocket();
-    }
+    socket.off('connect');
+    socket.off('connect_error');
+    socket.off('disconnect');
+    socket.off('reconnect');
+    socket.off('reconnect_error');
+    socket.off('reconnect_failed');
+    socket.off('messageSent');
+    socket.off('message');
+    socket.off('messageReceived');
+    socket.off('messageRead');
+    socket.off('roomJoined');
     
-    return () => {
-      if (socketRef.current) {
-        console.log('[useChat] 소켓 연결 정리');
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-    };
-  }, [actualUserId, setupSocket]);
+    console.log('[useChat] 모든 소켓 이벤트 리스너 제거 완료');
+  }, []);
 
   // 메시지 상태 업데이트 도우미 함수
   const updateMessageStatus = useCallback(
@@ -445,25 +227,160 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     []
   );
   
+  // 메시지 읽음 상태 업데이트 함수
+  const markMessagesAsRead = useCallback(async (): Promise<boolean> => {
+    // 디버깅을 위한 상세 로그 추가
+    console.log('[useChat] markMessagesAsRead 호출됨, 상태:', {
+      roomId,
+      actualUserId,
+      socketConnected,
+      messagesCount: messages.length,
+      unreadMessages: messages.filter(m => !m.isMine && !m.isRead)
+        .map(m => ({id: m.id, text: m.text.substring(0, 15)}))
+    });
+    
+    // 읽지 않은 메시지가 있는지 먼저 확인
+    const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
+    
+    // 읽지 않은 메시지가 없으면 바로 종료
+    if (!hasUnreadMessages) {
+      console.log('[useChat] 읽지 않은 메시지가 없어서 읽음 처리 스킵');
+      return true;
+    }
+    
+    // 재시도 기능을 위한 함수
+    const attemptMarkAsRead = async (retryCount = 0, maxRetries = 3): Promise<boolean> => {
+      if (!roomId || !actualUserId) {
+        // roomId나 userId가 없고 재시도 횟수가 남아있는 경우
+        if (retryCount < maxRetries) {
+          console.log(`[useChat] roomId 또는 userId 없음, ${retryCount + 1}번째 재시도 예정...`);
+          
+          // 첫 번째 메시지에서 roomId 추출 시도
+          if (messages.length > 0 && !roomId) {
+            for (const msg of messages) {
+              // 메시지 객체에 roomId가 있으면 사용
+              if ((msg as any).roomId) {
+                console.log('[useChat] 메시지에서 roomId 찾음:', (msg as any).roomId);
+                setRoomId(String((msg as any).roomId));
+                // roomId를 찾았지만 userId가 없는 경우, 다음 시도를 위해 약간의 딜레이를 줌
+                if (!actualUserId) {
+                  await new Promise(resolve => setTimeout(resolve, 200));
+                  return attemptMarkAsRead(retryCount + 1, maxRetries);
+                }
+                break;
+              }
+            }
+          }
+          
+          // 잠시 기다린 후 재시도 (roomId나 userId가 설정될 시간을 줌)
+          await new Promise(resolve => setTimeout(resolve, 500));
+          return attemptMarkAsRead(retryCount + 1, maxRetries);
+        }
+        
+        // 재시도 횟수를 모두 소진한 경우 메시지 기록
+        console.warn('[useChat] markMessagesAsRead: 방 ID 또는 사용자 ID가 없습니다.');
+        return false;
+      }
+
+      console.log('[useChat] 읽지 않은 메시지 존재 여부:', hasUnreadMessages, '전체 메시지 수:', messages.length);
+      
+      try {
+        // 소켓 연결 상태 확인
+        if (socketRef.current && socketConnected) {
+          console.log('[useChat] 소켓으로 읽음 상태 업데이트 시도:', { 
+            roomId, 
+            userId: actualUserId 
+          });
+          
+          try {
+            socketRef.current.emit('markAsRead', {
+              roomId,
+              userId: actualUserId
+            });
+            
+            // 메시지 상태 업데이트 (읽음 상태로 변경)
+            setMessages(prevMessages =>
+              prevMessages.map(msg => ({
+                ...msg,
+                isRead: msg.isMine ? msg.isRead : true
+              }))
+            );
+            
+            console.log('[useChat] 소켓으로 읽음 상태 업데이트 완료');
+            return true;
+          } catch (socketError) {
+            console.error('[useChat] 소켓으로 읽음 상태 업데이트 중 오류:', socketError);
+            // 소켓 오류 발생 시 HTTP API로 폴백
+          }
+        }
+        
+        // 소켓 연결이 없거나 오류 발생 시 HTTP API로 업데이트
+        console.log('[useChat] HTTP API로 읽음 상태 업데이트 시도');
+        
+        // 인증 토큰 가져오기
+        const authToken = getAuthToken();
+        
+        if (!authToken) {
+          console.error('[useChat] 인증 토큰이 없어 메시지 읽음 처리 실패');
+          return false;
+        }
+        
+        // HTTP 요청으로 메시지 읽음 상태 업데이트
+        const response = await fetch(`/api/messages/read`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            roomId,
+            userId: actualUserId
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`메시지 읽음 상태 업데이트 실패: ${response.status} ${response.statusText}`);
+        }
+        
+        // 메시지 상태 업데이트 (읽음 상태로 변경)
+        setMessages(prevMessages =>
+          prevMessages.map(msg => ({
+            ...msg,
+            isRead: msg.isMine ? msg.isRead : true
+          }))
+        );
+        
+        console.log('[useChat] HTTP API로 읽음 상태 업데이트 완료');
+        return true;
+      } catch (error) {
+        console.error('[useChat] 메시지 읽음 상태 업데이트 중 오류:', error);
+        return false;
+      }
+    };
+    
+    return attemptMarkAsRead();
+  }, [roomId, actualUserId, socketConnected, messages, transactionId, otherUserId]);
+
+  // 채팅 인터페이스 활성화 시 자동으로 메시지를 읽음 상태로 표시
+  useEffect(() => {
+    if (roomId && messages.length > 0 && !isLoading) {
+      // 내 메시지가 아니고 읽지 않은 메시지가 있는지 확인
+      const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
+      
+      if (hasUnreadMessages) {
+        markMessagesAsRead().catch(err => {
+          console.error('[useChat] 자동 읽음 표시 실패:', err);
+        });
+      }
+    }
+  }, [roomId, messages, isLoading, markMessagesAsRead]);
+
   // 중복 메시지 확인 함수
   const isMessageDuplicate = useCallback((messageId: string | number, clientId?: string) => {
     return messages.some(msg => 
       (messageId && (msg.id === messageId)) || 
       (clientId && msg.clientId === clientId)
     );
-  }, [messages]);
-
-  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
-  useEffect(() => {
-    if (messages.length > 0) {
-      // 메시지가 생성 시간순으로 정렬되어 있다고 가정하면 
-      // 가장 최근 메시지는 배열의 마지막 요소입니다.
-      const newestMessage = messages[messages.length - 1];
-      if (newestMessage && newestMessage.id) {
-        console.log('[useChat] 최신 메시지 ID 업데이트:', newestMessage.id, '(텍스트: ' + newestMessage.text.substring(0, 20) + '...)');
-        setLastMessageId(newestMessage.id);
-      }
-    }
   }, [messages]);
 
   // 사용자가 보기에 쉬운 오류 메시지 반환
@@ -493,10 +410,39 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
   const fetchMessages = useCallback(async (options: { force?: boolean, forceScrollToBottom?: boolean, smoothScroll?: boolean, silent?: boolean } = {}): Promise<boolean> => {
     const { force = false, forceScrollToBottom = false, smoothScroll = false, silent = false } = options;
     
-    if (isLoading && !force) {
-      console.log('[useChat] 이미 로딩 중, 요청 무시');
+    // 강제 요청이 아닌 경우 타이핑 차단 확인
+    if (!force && isTypingBlockingRef.current && isUserTypingRef.current) {
+      console.log('[useChat] 타이핑 중 요청 차단 (타이핑 차단 활성화)');
       return false;
     }
+    
+    // 중복 요청 방지 (이미 요청 중이면 무시)
+    if (isRequestInProgressRef.current && !force) {
+      console.log('[useChat] 이미 요청이 진행 중, 중복 요청 방지');
+      return false;
+    }
+    
+    // 타이핑 상태 및 시간 확인 로직 강화
+    const now = Date.now();
+    const timeSinceLastTyping = now - lastTypingEventTimeRef.current;
+    
+    // 타이핑 중이거나 타이핑 쿨다운 기간 내인 경우 요청 건너뜀 (강제 요청 제외)
+    if (!force && (isUserTypingRef.current || timeSinceLastTyping < typingCooldownRef.current)) {
+      console.log(`[useChat] 타이핑 중이거나 쿨다운 중 (${timeSinceLastTyping}ms 전 타이핑), 요청 건너뜀`);
+      return false;
+    }
+    
+    // 요청 빈도 제한 (5초 이내 중복 요청 방지, 강제 요청 제외)
+    const timeSinceLastRequest = now - lastRequestTimeRef.current;
+    if (!force && timeSinceLastRequest < requestLimitTimeRef.current) {
+      console.log(`[useChat] 요청 빈도 제한으로 인한 스킵 (마지막 요청: ${timeSinceLastRequest}ms 전)`);
+      return false;
+    }
+    
+    // 요청 시작 표시 및 시간 기록
+    console.log('[useChat] 메시지 가져오기 시작:', { force, isTyping: isUserTypingRef.current });
+    isRequestInProgressRef.current = true;
+    lastRequestTimeRef.current = now;
     
     // silent 옵션이 true가 아닐 때만 로딩 상태 표시
     if (!silent) {
@@ -521,6 +467,9 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       if (otherUserId) {
         params.append('conversationWith', otherUserId);
       }
+      
+      // 캐시 방지를 위한 타임스탬프 추가
+      params.append('_t', Date.now().toString());
       
       // 인증 토큰 가져오기
       const authToken = getAuthToken();
@@ -557,31 +506,57 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
         console.log('[useChat] data 구조:', Object.keys(data));
         
         // data에서 룸 ID를 찾을 수 있는 다른 방법 시도
-        if (data.messages?.length > 0 && data.messages[0].roomId) {
-          const firstMsgRoomId = data.messages[0].roomId;
-          console.log('[useChat] 메시지에서 룸 ID 추출:', firstMsgRoomId);
-          setRoomId(String(firstMsgRoomId));
+        if (data.messages?.length > 0) {
+          // 첫 번째 메시지 또는 첫 번째로 룸 ID가 있는 메시지에서 룸 ID 추출 시도
+          for (const msg of data.messages) {
+            if (msg.roomId) {
+              console.log('[useChat] 메시지에서 룸 ID 추출:', msg.roomId);
+              setRoomId(String(msg.roomId));
+              break;
+            }
+          }
+        } else if (transactionId) {
+          // 거래 ID가 있으면 임시 룸 ID로 사용할 수 있음 (백엔드 로직에 따라 다름)
+          console.log('[useChat] 거래 ID를 통한 임시 룸 ID 생성:', transactionId);
+          setRoomId(`temp_room_${transactionId}`);
         }
       }
       
       if (data.messages && Array.isArray(data.messages)) {
         // 메시지 형식 변환
-        const formattedMessages: Message[] = data.messages.map((msg: any) => ({
-          id: msg.id,
-          senderId: String(msg.senderId),
-          receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
-          text: msg.content,
-          timestamp: msg.createdAt,
-          isMine: String(msg.senderId) === actualUserId,
-          status: 'sent',
-          isRead: msg.isRead
-        }));
+        const formattedMessages: Message[] = data.messages.map((msg: any) => {
+          // roomId를 메시지 객체에 추가 (원본 데이터에 있는 경우)
+          const roomIdFromMsg = msg.roomId ? String(msg.roomId) : undefined;
+          
+          return {
+            id: msg.id,
+            senderId: String(msg.senderId),
+            receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
+            text: msg.content,
+            timestamp: msg.createdAt,
+            isMine: String(msg.senderId) === actualUserId,
+            status: 'sent',
+            isRead: msg.isRead,
+            roomId: roomIdFromMsg // roomId 추가
+          };
+        });
         
         setMessages(formattedMessages);
         
+        // 메시지에서 roomId 설정이 아직 안 되었고, 메시지에 roomId가 있으면 설정
+        if (!roomId && formattedMessages.length > 0) {
+          for (const msg of formattedMessages) {
+            if ((msg as any).roomId) {
+              console.log('[useChat] 포맷된 메시지에서 룸 ID 설정:', (msg as any).roomId);
+              setRoomId((msg as any).roomId);
+              break;
+            }
+          }
+        }
+        
         // 최신 메시지 ID 업데이트 (마지막 메시지가 최신임)
         if (formattedMessages.length > 0) {
-          const newestMessage = formattedMessages[formattedMessages.length - 1];
+          const newestMessage = formattedMessages[0]; // API가 내림차순으로 반환하는 경우
           setLastMessageId(newestMessage.id);
           console.log('[useChat] 최신 메시지 ID 업데이트 (fetch):', newestMessage.id);
         }
@@ -617,174 +592,280 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
       if (!silent) {
         setIsLoading(false);
       }
-    }
-  }, [actualUserId, transactionId, otherUserId, isLoading, triggerScrollToBottom, getHumanReadableError]);
-
-  // 메시지 읽음 상태 업데이트 함수
-  const markMessagesAsRead = useCallback(async (): Promise<boolean> => {
-    // 디버깅을 위한 상세 로그 추가
-    console.log('[useChat] markMessagesAsRead 호출됨, 상태:', {
-      roomId,
-      actualUserId,
-      socketConnected,
-      messagesCount: messages.length,
-      unreadMessages: messages.filter(m => !m.isMine && !m.isRead)
-        .map(m => ({id: m.id, text: m.text.substring(0, 15)}))
-    });
-    
-    if (!roomId || !actualUserId) {
-      console.warn('[useChat] markMessagesAsRead: 방 ID 또는 사용자 ID가 없습니다.');
       
-      // 이미 메시지가 있는데 roomId가 없는 경우 경고 로그만 남김
-      if (messages.length > 0) {
-        console.log('[useChat] 메시지는 있지만 roomId가 없음. roomId가 로드될 때까지 기다려주세요.');
+      // 요청 완료 표시
+      isRequestInProgressRef.current = false;
+    }
+  }, [actualUserId, transactionId, otherUserId, isLoading, triggerScrollToBottom]);
+
+  // HTTP 폴링으로 전환하는 함수 최적화
+  const switchToHttpPolling = useCallback(() => {
+    // 타이핑 중이면 폴링 시작 자체를 막음
+    if (isTypingBlockingRef.current && isUserTypingRef.current) {
+      console.log('[useChat] 타이핑 중이므로 폴링 시작 불가');
+      return;
+    }
+    
+    // 폴링이 이미 활성화되어 있거나 소켓이 연결된 경우 중복 폴링 방지
+    if (pollingTimerRef.current) {
+      console.log('[useChat] 이미 폴링 중, 중복 폴링 방지');
+      return;
+    }
+    
+    if (socketConnected && socketRef.current?.connected) {
+      console.log('[useChat] 소켓이 연결됨, HTTP 폴링 불필요');
+      return;
+    }
+    
+    // 기존 타이머 정리
+    if (pollingTimerRef.current) {
+      console.log('[useChat] 기존 폴링 타이머 제거');
+      clearInterval(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+
+    console.log('[useChat] HTTP 폴링으로 전환합니다.');
+    
+    // 즉시 첫 번째 메시지를 가져옴 - 타이핑 중이 아닐 때만
+    if (!isUserTypingRef.current) {
+      fetchMessages({ force: true }).catch(err => 
+        console.error('메시지 로드 실패:', err)
+      );
+    }
+    
+    // HTTP 폴링 상태 및 마지막 성공 시간 추적
+    let lastSuccessfulPoll = Date.now();
+    let consecutiveFailures = 0;
+    let currentPollingInterval = pollingIntervalRef.current;
+    
+    // 폴링 함수 정의
+    const pollFunction = () => {
+      const now = Date.now();
+      
+      // 타이핑 차단이 활성화되어 있고 사용자가 타이핑 중이면 완전히 폴링 건너뜀
+      if (isTypingBlockingRef.current && isUserTypingRef.current) {
+        console.log('[useChat] 타이핑 중 폴링 차단 (타이핑 차단 활성화)');
+        return;
       }
       
-      return false;
-    }
-
-    // 읽지 않은 메시지가 있는지 확인
-    const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
-    console.log('[useChat] 읽지 않은 메시지 존재 여부:', hasUnreadMessages, '전체 메시지 수:', messages.length);
-    
-    // 읽지 않은 메시지가 없으면 바로 종료
-    if (!hasUnreadMessages) {
-      console.log('[useChat] 읽지 않은 메시지가 없어서 읽음 처리 스킵');
-      return true;
-    }
-
-    try {
-      // 소켓 연결 상태 확인
-      if (socketRef.current && socketConnected) {
-        console.log('[useChat] 소켓으로 읽음 상태 업데이트 시도:', { 
-          roomId, 
-          userId: actualUserId 
-        });
-        
-        socketRef.current.emit('markAsRead', {
-          roomId,
-          userId: parseInt(actualUserId)
-        });
-        
-        console.log('[useChat] 소켓으로 읽음 상태 업데이트 요청 전송 완료');
-        
-        // 로컬 메시지 상태 업데이트
-        setMessages(prev => {
-          const updated = prev.map(msg => {
-            if (!msg.isMine && !msg.isRead) {
-              console.log('[useChat] 메시지 읽음 처리:', msg.id);
-              return { ...msg, isRead: true };
-            }
-            return msg;
-          });
-          
-          console.log('[useChat] 메시지 업데이트 완료:', 
-            updated.filter(m => !m.isMine).map(m => ({id: m.id, isRead: m.isRead}))
-          );
-          
-          return updated;
-        });
-        
-        // 일정 시간 후에 메시지 목록을 다시 확인하는 코드 추가
-        setTimeout(() => {
-          // 소켓 이벤트를 통해 메시지 상태 업데이트 요청
-          if (socketRef.current) {
-            socketRef.current.emit('getMessages', { roomId });
-          }
-        }, 500);
-        
-        return true;
-      } else {
-        // HTTP API로 읽음 상태 업데이트
-        console.log('[useChat] HTTP API로 읽음 상태 업데이트 시도');
-        
-        const authToken = getAuthToken();
-        const response = await fetch(`/api/messages/read`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
-          body: JSON.stringify({
-            roomId,
-            userId: actualUserId
-          })
-        });
-        
-        const responseData = await response.json();
-        console.log('[useChat] 읽음 상태 API 응답:', responseData);
-        
-        if (response.ok) {
-          // 로컬 메시지 상태 업데이트
-          setMessages(prev => {
-            const updated = prev.map(msg => {
-              if (!msg.isMine && !msg.isRead) {
-                console.log('[useChat] 메시지 읽음 처리(HTTP):', msg.id);
-                return { ...msg, isRead: true };
-              }
-              return msg;
-            });
-            
-            console.log('[useChat] 메시지 업데이트 완료(HTTP):', 
-              updated.filter(m => !m.isMine).map(m => ({id: m.id, isRead: m.isRead}))
-            );
-            
-            return updated;
-          });
-          
-          // 일정 시간 후에 메시지 목록을 다시 가져오기
-          // 순환 참조를 피하기 위해 직접 API 호출 사용
-          setTimeout(async () => {
-            try {
-              // HTTP API를 통해 메시지 가져오기
-              const params = new URLSearchParams();
-              if (transactionId) {
-                params.append('purchaseId', transactionId);
-              }
-              if (otherUserId) {
-                params.append('conversationWith', otherUserId);
-              }
-              
-              const authToken = getAuthToken();
-              const response = await fetch(`/api/messages?${params.toString()}`, {
-                headers: {
-                  'Authorization': `Bearer ${authToken}`,
-                }
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                if (data.messages && Array.isArray(data.messages)) {
-                  const formattedMessages: Message[] = data.messages.map((msg: any) => ({
-                    id: msg.id,
-                    senderId: String(msg.senderId),
-                    receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
-                    text: msg.content,
-                    timestamp: msg.createdAt,
-                    isMine: String(msg.senderId) === actualUserId,
-                    status: 'sent',
-                    isRead: msg.isRead
-                  }));
-                  
-                  setMessages(formattedMessages);
-                  console.log('[useChat] 읽음 처리 후 메시지 상태 업데이트 완료');
-                }
-              }
-            } catch (error) {
-              console.error('[useChat] 읽음 처리 후 메시지 확인 오류:', error);
-            }
-          }, 500);
-          
-          return true;
-        } else {
-          throw new Error(`읽음 상태 업데이트 실패: ${responseData.error || '알 수 없는 오류'}`);
+      // 소켓이 연결되면 폴링 중지
+      if (socketConnected && socketRef.current?.connected) {
+        console.log('[useChat] 소켓 연결됨, 폴링 타이머 중지');
+        if (pollingTimerRef.current) {
+          clearInterval(pollingTimerRef.current);
+          pollingTimerRef.current = null;
         }
+        return;
       }
-    } catch (error) {
-      console.error('[useChat] 읽음 상태 업데이트 오류:', error);
-      return false;
+      
+      // 타이핑 상태 및 최근 타이핑 시간 확인
+      const timeSinceLastTyping = now - lastTypingEventTimeRef.current;
+      if (isUserTypingRef.current || timeSinceLastTyping < typingCooldownRef.current) {
+        console.log('[useChat] 사용자 타이핑 중이거나 타이핑 쿨다운 중, 폴링 건너뜀');
+        return;
+      }
+      
+      // 마지막 요청 이후 최소 간격 확인
+      const timeSinceLastRequest = now - lastRequestTimeRef.current;
+      if (timeSinceLastRequest < requestLimitTimeRef.current) { // 최소 5초 간격
+        console.log('[useChat] 최근 요청 후 제한 시간이 지나지 않았습니다. 폴링 건너뜀');
+        return;
+      }
+      
+      // 이미 다른 요청이 처리 중인 경우
+      if (isRequestInProgressRef.current) {
+        console.log('[useChat] 다른 요청이 처리 중, 폴링 건너뜀');
+        return;
+      }
+      
+      console.log('[useChat] HTTP 폴링으로 메시지 업데이트 시도');
+      fetchMessages({ force: true, silent: true })
+        .then(success => {
+          if (success) {
+            lastSuccessfulPoll = now;
+            consecutiveFailures = 0;
+            
+            // 폴링 간격 원래대로 복원 (점진적으로)
+            if (currentPollingInterval > pollingIntervalRef.current) {
+              currentPollingInterval = Math.max(pollingIntervalRef.current, currentPollingInterval * 0.8);
+              
+              // 폴링 간격 조정
+              clearInterval(pollingTimerRef.current!);
+              pollingTimerRef.current = setInterval(pollFunction, currentPollingInterval);
+              console.log(`[useChat] 폴링 간격 감소: ${currentPollingInterval}ms`);
+            }
+          }
+        })
+        .catch(err => {
+          console.error('[useChat] 폴링 메시지 로드 실패:', err);
+          consecutiveFailures++;
+          
+          // 연속 실패 시 폴링 간격 증가 (최대 30초)
+          if (consecutiveFailures > 2) {
+            currentPollingInterval = Math.min(30000, currentPollingInterval * 1.5);
+            
+            // 폴링 간격 조정
+            clearInterval(pollingTimerRef.current!);
+            pollingTimerRef.current = setInterval(pollFunction, currentPollingInterval);
+            console.log(`[useChat] 폴링 간격 증가: ${currentPollingInterval}ms (연속 실패: ${consecutiveFailures}회)`);
+          }
+        });
+    };
+    
+    // 새 폴링 타이머 설정
+    pollingTimerRef.current = setInterval(pollFunction, pollingIntervalRef.current);
+    
+    return () => {
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+    };
+  }, [fetchMessages, useHttpPolling, socketConnected]);
+
+  // 소켓 설정 함수를 리팩토링된 코드로 교체
+  const setupSocket = useCallback(() => {
+    if (!actualUserId) {
+      console.error('[useChat] 사용자 ID 없음 → 소켓 연결 불가');
+      return;
     }
-  }, [roomId, actualUserId, socketConnected, messages, transactionId, otherUserId]);
+
+    // 기존 소켓 정리
+    if (socketRef.current) {
+      socketRef.current.off(); // 모든 핸들러 제거
+      socketRef.current.disconnect();
+      socketRef.current = null;
+      console.log('[useChat] 기존 소켓 연결 해제 및 정리 완료');
+    }
+
+    const token = getAuthToken();
+    const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3000', {
+      auth: { token },
+      transports: ['websocket', 'polling'], // 폴링도 허용하여 폴백 메커니즘 추가
+      reconnection: true,
+      reconnectionAttempts: 15,           // 재시도 횟수 증가
+      reconnectionDelay: 2000,            // 재연결 지연 시간 증가
+      timeout: 30000,                     // 타임아웃 30초로 증가
+      forceNew: false,                    // 기존 연결 재사용 허용
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('[useChat] ✅ 소켓 연결 성공');
+      setSocketConnected(true);
+      setError(null);
+      // 연결 성공 시 폴링 상태 해제
+      setSocketConnectionFailed(false);
+
+      if (!roomJoinedRef.current && transactionId && otherUserId) {
+        socket.emit('createOrJoinRoom', {
+          userId: actualUserId,
+          transactionId,
+          conversationWithId: otherUserId,
+        });
+        roomJoinedRef.current = true;
+      }
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.warn('[useChat] ⛔ 소켓 연결 해제:', reason);
+      setSocketConnected(false);
+
+      if (reason === 'io server disconnect') {
+        socket.connect(); // 서버가 끊었을 때는 수동 재연결
+      }
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('[useChat] ❌ 소켓 연결 실패:', err.message);
+      setSocketConnected(false);
+      setError('소켓 연결 실패: ' + err.message);
+      
+      // 즉시 HTTP 폴링으로 전환
+      setSocketConnectionFailed(true);
+      switchToHttpPolling();
+    });
+
+    socket.on('messageSent', (data) => {
+      const newMsg = data.message;
+      setMessages(prev => {
+        const alreadyExists = prev.some(m => m.id === newMsg.id);
+        return alreadyExists ? prev : [...prev, newMsg];
+      });
+    });
+
+    // 추가 핸들러는 필요 시 여기에
+  }, [actualUserId, transactionId, otherUserId, switchToHttpPolling]);
+
+  // setupSocket 함수가 한 번만 실행되도록 관리
+  useEffect(() => {
+    if (!actualUserId || !transactionId || socketInitializedRef.current) return;
+    
+    console.log('[useChat] 소켓 초기화 시작');
+    socketInitializedRef.current = true;
+    roomJoinedRef.current = false;
+    setupSocket();
+    
+    return () => {
+      console.log('[useChat] 소켓 초기화 정리');
+      socketInitializedRef.current = false;
+      roomJoinedRef.current = false;
+      
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+      
+      if (socketRef.current) {
+        unregisterAllSocketEvents(socketRef.current);
+        socketRef.current.disconnect();
+      }
+    };
+  }, [actualUserId, transactionId, setupSocket, unregisterAllSocketEvents]);
+
+  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
+  useEffect(() => {
+    if (messages.length > 0) {
+      // 메시지가 생성 시간순으로 정렬되어 있다고 가정하면 
+      // 가장 최근 메시지는 배열의 마지막 요소입니다.
+      const newestMessage = messages[messages.length - 1];
+      if (newestMessage && newestMessage.id) {
+        console.log('[useChat] 최신 메시지 ID 업데이트:', newestMessage.id, '(텍스트: ' + newestMessage.text.substring(0, 20) + '...)');
+        setLastMessageId(newestMessage.id);
+      }
+    }
+  }, [messages]);
+
+  // 소켓 연결 상태 모니터링 및 폴링 제어
+  useEffect(() => {
+    console.log('[useChat] 소켓 연결 상태 변경:', socketConnected);
+    
+    // 소켓 연결 시 폴링 중지
+    if (socketConnected && socketRef.current?.connected) {
+      console.log('[useChat] 소켓 연결됨, HTTP 폴링 비활성화');
+      
+      // HTTP 폴링 상태 초기화
+      setUseHttpPolling(false);
+      
+      // 기존 폴링 타이머가 있으면 제거
+      if (pollingTimerRef.current) {
+        console.log('[useChat] 소켓 연결로 인한 폴링 타이머 제거');
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+    } else if (actualUserId && transactionId && !socketConnected) {
+      // 소켓 연결이 끊어진 경우에만 HTTP 폴링 시작
+      console.log('[useChat] 소켓 연결 안됨, HTTP 폴링 활성화 검토');
+      
+      // 이미 폴링 중이 아닌 경우에만 시작
+      if (!pollingTimerRef.current && !useHttpPolling) {
+        console.log('[useChat] HTTP 폴링 시작');
+        isPollingActiveRef.current = true;
+        switchToHttpPolling();
+      }
+    }
+  }, [socketConnected, actualUserId, transactionId, switchToHttpPolling]);
 
   // 메시지 전송 실패 시 자동 재시도 기능 (1회만)
   const handleMessageSendError = useCallback(async (
@@ -967,23 +1048,53 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     }
   }, [actualUserId, otherUserId, transactionId, socketConnected, updateMessageStatus, error, handleMessageSendError, fetchMessages]);
 
+  // 메시지 이벤트 핸들러 관리를 위한 ref
+  const messageHandlerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastEventTimestampRef = useRef<number>(0);
+  
   // 메시지 수신할 때 메시지 리스트를 자동으로 업데이트
   useEffect(() => {
     const messageReceivedHandler = () => {
-      // 이미 업데이트 중이면 중복 요청 방지
-      if (isUpdatingRef.current) return;
+      // 1. 이미 업데이트 중이면 중복 요청 방지
+      if (isUpdatingRef.current) {
+        console.log('[useChat] 이미 업데이트 중, 요청 무시');
+        return;
+      }
       
+      // 2. 요청 빈도 제한 (1초 내 중복 이벤트 무시)
+      const now = Date.now();
+      if (now - lastEventTimestampRef.current < 1000) {
+        console.log('[useChat] 이벤트 빈도 제한, 요청 무시');
+        
+        // 기존 예약된 타이머가 있으면 취소
+        if (messageHandlerTimeoutRef.current) {
+          clearTimeout(messageHandlerTimeoutRef.current);
+        }
+        
+        // 새로운 타이머 설정 (1초 후 실행)
+        messageHandlerTimeoutRef.current = setTimeout(() => {
+          messageReceivedHandler();
+        }, 1000);
+        
+        return;
+      }
+      
+      // 3. 타임스탬프 업데이트
+      lastEventTimestampRef.current = now;
       isUpdatingRef.current = true;
-      // 약간의 지연을 두어 메시지가 서버에 저장될 시간을 제공
-      setTimeout(() => {
+      
+      // 4. API 호출 지연 시간을 1초로 증가
+      console.log('[useChat] 메시지 수신 이벤트, 업데이트 예약 (1초 후)');
+      messageHandlerTimeoutRef.current = setTimeout(() => {
         fetchMessages({ force: true, forceScrollToBottom: true, smoothScroll: false, silent: true })
           .catch(err => {
             console.error('[useChat] 메시지 수신 이벤트 후 메시지 목록 업데이트 실패:', err);
           })
           .finally(() => {
             isUpdatingRef.current = false;
+            messageHandlerTimeoutRef.current = null;
           });
-      }, 300);
+      }, 1000);
     };
 
     if (socketRef.current) {
@@ -1003,6 +1114,12 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     }
 
     return () => {
+      // 타이머 정리
+      if (messageHandlerTimeoutRef.current) {
+        clearTimeout(messageHandlerTimeoutRef.current);
+      }
+      
+      // 이벤트 리스너 정리
       if (socketRef.current) {
         socketRef.current.off('message', messageReceivedHandler);
         socketRef.current.off('messageReceived', messageReceivedHandler);
@@ -1056,380 +1173,76 @@ export function useChat(options: ChatOptions | null = null): ChatReturn {
     };
   }, [socketConnected, roomId, fetchMessages]);
 
-  // 메시지 목록이 변경될 때 최신 메시지 ID 업데이트
+  // 타이핑 이벤트 리스너 설정
   useEffect(() => {
-    if (messages.length > 0) {
-      // 메시지가 생성 시간순으로 정렬되어 있다고 가정하면 
-      // 가장 최근 메시지는 배열의 마지막 요소입니다.
-      const newestMessage = messages[messages.length - 1];
-      if (newestMessage && newestMessage.id) {
-        console.log('[useChat] 최신 메시지 ID 업데이트:', newestMessage.id, '(텍스트: ' + newestMessage.text.substring(0, 20) + '...)');
-        setLastMessageId(newestMessage.id);
-      }
-    }
-  }, [messages]);
-
-  // 소켓 연결 실패 시 HTTP API로 전환하는 함수
-  const switchToHttpPolling = useCallback(() => {
-    if (useHttpPolling) return; // 이미 HTTP 폴링 중이면 스킵
+    if (typeof window === 'undefined') return;
     
-    console.log('[useChat] Socket.IO 연결 실패, HTTP 폴링으로 전환합니다.');
-    setUseHttpPolling(true);
-    setSocketConnectionFailed(true);
-    
-    // 폴링 시작
-    if (pollingTimerRef.current) {
-      clearTimeout(pollingTimerRef.current);
-    }
-    
-    // 즉시 메시지 가져오기
-    fetchMessages({ force: true }).catch(err => {
-      console.error('[useChat] 초기 메시지 로드 실패:', err);
-    });
-    
-    // 폴링 타이머 설정
-    pollingTimerRef.current = setTimeout(pollMessages, pollingIntervalRef.current);
-  }, [useHttpPolling, fetchMessages]);
-  
-  // 주기적으로 메시지를 폴링하는 함수
-  const pollMessages = useCallback(() => {
-    if (!useHttpPolling || !isPollingActiveRef.current) return;
-    
-    console.log('[useChat] HTTP 폴링으로 메시지 가져오기...');
-    fetchMessages({ force: true, silent: true })
-      .catch(err => {
-        console.error('[useChat] 폴링 중 메시지 로드 실패:', err);
-      })
-      .finally(() => {
-        // 다음 폴링 설정
-        if (isPollingActiveRef.current && useHttpPolling) {
-          pollingTimerRef.current = setTimeout(pollMessages, pollingIntervalRef.current);
-        }
-      });
-  }, [useHttpPolling, fetchMessages]);
-
-  // 컴포넌트 마운트/언마운트 및 의존성 변경 시 실행
-  useEffect(() => {
-    if (!actualUserId || !transactionId) return;
-    
-    console.log('[useChat] 초기화 중, userId:', actualUserId, 'transactionId:', transactionId);
-    
-    // 소켓 연결 시도
-    if (!socketConnectionFailed) {
-      setupSocket();
-    }
-    
-    // HTTP 폴링으로 전환된 경우
-    if (useHttpPolling && !pollingTimerRef.current) {
-      console.log('[useChat] HTTP 폴링 시작...');
-      pollMessages();
-    }
-    
-    // 클린업 함수
-    return () => {
-      console.log('[useChat] 정리 중...');
-      isPollingActiveRef.current = false;
+    // 타이핑 이벤트 핸들러 함수
+    const handleTypingEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const detail = customEvent.detail || {};
+      const isTyping = detail.isTyping || false;
+      const timestamp = detail.timestamp || Date.now();
+      const inputValue = detail.inputValue || '';
       
+      console.log('[useChat] 타이핑 이벤트 감지:', { isTyping, timestamp, inputValueLength: inputValue.length });
+      
+      // 타이핑 상태 업데이트
+      isUserTypingRef.current = isTyping;
+      lastTypingEventTimeRef.current = timestamp;
+      
+      // 기존 타이머 초기화
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      
+      // 사용자가 타이핑 중이라면 타이핑이 끝난 후 쿨다운 타이머 설정
+      if (isTyping) {
+        typingTimeoutRef.current = setTimeout(() => {
+          console.log('[useChat] 타이핑 쿨다운 완료, 타이핑 상태 해제');
+          isUserTypingRef.current = false;
+          typingTimeoutRef.current = null;
+        }, typingCooldownRef.current);
+      } else {
+        // 타이핑 종료 이벤트를 받았을 때 즉시 타이핑 상태 해제하지 않고
+        // 일정 시간(5초) 후에 해제하여 마지막 입력 후 여유 시간 제공
+        typingTimeoutRef.current = setTimeout(() => {
+          console.log('[useChat] 타이핑 종료 후 추가 쿨다운 완료');
+          isUserTypingRef.current = false;
+          typingTimeoutRef.current = null;
+        }, 5000);
+      }
+    };
+    
+    // 이벤트 리스너 등록
+    window.addEventListener('chat:typing', handleTypingEvent);
+    
+    // 클린업 함수 반환
+    return () => {
+      window.removeEventListener('chat:typing', handleTypingEvent);
+      
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // 컴포넌트 언마운트 시 리소스 정리
+  useEffect(() => {
+    return () => {
+      console.log('[useChat] 컴포넌트 언마운트 - 리소스 정리');
       if (pollingTimerRef.current) {
-        clearTimeout(pollingTimerRef.current);
-        pollingTimerRef.current = null;
+        clearInterval(pollingTimerRef.current);
       }
       
       if (socketRef.current) {
-        console.log('[useChat] 소켓 연결 해제...');
+        unregisterAllSocketEvents(socketRef.current);
         socketRef.current.disconnect();
       }
     };
-  }, [actualUserId, transactionId, setupSocket, socketConnectionFailed, useHttpPolling, pollMessages]);
-
-  // 폴링 시작 함수
-  const startPolling = useCallback(() => {
-    if (!isPollingActiveRef.current) return;
-    
-    // 기존 타이머가 있으면 제거
-    if (pollingTimerRef.current) {
-      clearTimeout(pollingTimerRef.current);
-    }
-    
-    // 새 타이머 설정
-    pollingTimerRef.current = setTimeout(async () => {
-      if (actualUserId && transactionId) {
-        console.log('[useChat] 폴링으로 메시지 확인 중...');
-        try {
-          // HTTP API를 통해 메시지 가져오기
-          const params = new URLSearchParams();
-          if (transactionId) {
-            params.append('purchaseId', transactionId);
-          }
-          if (otherUserId) {
-            params.append('conversationWith', otherUserId);
-          }
-          
-          // 캐시 방지를 위한 타임스탬프 추가
-          params.append('_t', Date.now().toString());
-          
-          // 인증 토큰 가져오기
-          const authToken = getAuthToken();
-          
-          const response = await fetch(`/api/messages?${params.toString()}`, {
-            headers: {
-              'Authorization': `Bearer ${authToken}`,
-            }
-          });
-          
-          if (!response.ok) {
-            console.warn('[useChat] 폴링 중 오류:', response.status);
-          } else {
-            const data = await response.json();
-            
-            // 새 메시지가 있는지 확인
-            if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
-              const newMessages = data.messages;
-              
-              console.log('[useChat] 폴링으로 가져온 메시지 수:', newMessages.length);
-              console.log('[useChat] 현재 lastMessageId:', lastMessageId);
-              
-              // 서버에서 가져온 메시지와 현재 상태의 메시지 비교
-              let hasNewMessages = false;
-              
-              // 가장 최근 메시지의 ID를 가져옵니다 (일반적으로 배열의 마지막 요소)
-              const serverNewestMessageId = newMessages[newMessages.length - 1]?.id;
-              
-              // 중요: 디버깅 정보 출력
-              if (serverNewestMessageId) {
-                console.log('[useChat] 서버 최신 메시지 ID:', serverNewestMessageId);
-                const serverNewestMessage = newMessages[newMessages.length - 1];
-                console.log('[useChat] 서버 최신 메시지 내용:', 
-                  serverNewestMessage?.content?.substring(0, 30) || '내용 없음');
-              }
-              
-              // 서버에서 가져온 메시지 중 lastMessageId 이후에 추가된 메시지가 있는지 확인
-              if (lastMessageId) {
-                // 메시지 ID를 기준으로 새 메시지 확인
-                const lastMessageIndex = newMessages.findIndex((msg: any) => msg.id === lastMessageId);
-                
-                // lastMessageId가 서버 메시지에 없거나 마지막 메시지가 아니면 새 메시지가 있는 것
-                if (lastMessageIndex === -1 || lastMessageIndex < newMessages.length - 1) {
-                  hasNewMessages = true;
-                  console.log('[useChat] 새 메시지 감지! lastMessageIndex:', lastMessageIndex);
-                }
-              } else {
-                // lastMessageId가 없으면 모든 메시지가 새 메시지
-                hasNewMessages = newMessages.length > 0;
-                console.log('[useChat] lastMessageId가 없어 모든 메시지를 새 메시지로 간주합니다.');
-              }
-              
-              // 또는 메시지 수로 비교 (messages.length < newMessages.length)
-              if (messages.length < newMessages.length) {
-                hasNewMessages = true;
-                console.log('[useChat] 메시지 수 증가 감지:', 
-                  `현재: ${messages.length}, 서버: ${newMessages.length}`);
-              }
-              
-              // 새 메시지가 있으면 메시지 목록 업데이트
-              if (hasNewMessages) {
-                console.log('[useChat] 새 메시지 감지됨, 메시지 목록 업데이트');
-                
-                // 새 메시지가 있으면 메시지 목록 업데이트
-                const formattedMessages: Message[] = newMessages.map((msg: any) => ({
-                  id: msg.id,
-                  senderId: String(msg.senderId),
-                  receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
-                  text: msg.content,
-                  timestamp: msg.createdAt,
-                  isMine: String(msg.senderId) === actualUserId,
-                  status: 'sent'
-                }));
-                
-                setMessages(formattedMessages);
-                
-                // 마지막 메시지 ID 업데이트
-                if (formattedMessages.length > 0) {
-                  const newestMsg = formattedMessages[formattedMessages.length - 1];
-                  setLastMessageId(newestMsg.id);
-                  console.log('[useChat] lastMessageId를 업데이트했습니다:', newestMsg.id);
-                }
-                
-                // 스크롤 이벤트 트리거
-                if (typeof window !== 'undefined') {
-                  triggerScrollToBottom(false); // 부드러운 스크롤 없이 즉시 이동
-                }
-              } else {
-                console.log('[useChat] 새 메시지 없음');
-              }
-            }
-          }
-        } catch (error) {
-          console.error('[useChat] 폴링 중 오류:', error);
-        }
-      }
-      
-      // 폴링 재시작
-      startPolling();
-    }, pollingIntervalRef.current);
-  }, [actualUserId, transactionId, otherUserId, lastMessageId, messages.length]);
-
-  // 페이지/컴포넌트가 마운트되었을 때 폴링 시작 - 폴링 메커니즘 개선
-  useEffect(() => {
-    if (actualUserId && transactionId) {
-      console.log('[useChat] 폴링 시작');
-      isPollingActiveRef.current = true;
-      
-      // 매 5초마다 강제로 폴링 실행 (소켓 연결 상태와 무관하게) - silent 모드로 로딩 표시 없이 실행
-      const forcedPollingTimer = setInterval(() => {
-        console.log('[useChat] 강제 폴링 실행...');
-        fetchMessages({ force: true, silent: true })
-          .catch(err => console.error('[useChat] 강제 폴링 실패:', err));
-      }, pollingIntervalRef.current);
-      
-      // 초기 로딩
-      startPolling();
-      
-      return () => {
-        // 컴포넌트 언마운트 시 폴링 중지
-        console.log('[useChat] 폴링 중지 및 타이머 정리');
-        isPollingActiveRef.current = false;
-        
-        clearInterval(forcedPollingTimer);
-        
-        if (pollingTimerRef.current) {
-          clearTimeout(pollingTimerRef.current);
-        }
-      };
-    }
-  }, [actualUserId, transactionId, startPolling, fetchMessages]);
-
-  // 채팅 인터페이스 활성화 시 자동으로 메시지를 읽음 상태로 표시
-  useEffect(() => {
-    if (roomId && messages.length > 0 && !isLoading) {
-      // 내 메시지가 아니고 읽지 않은 메시지가 있는지 확인
-      const hasUnreadMessages = messages.some(msg => !msg.isMine && !msg.isRead);
-      
-      if (hasUnreadMessages) {
-        markMessagesAsRead().catch(err => {
-          console.error('[useChat] 자동 읽음 표시 실패:', err);
-        });
-      }
-    }
-  }, [roomId, messages, isLoading, markMessagesAsRead]);
-
-  // roomId가 설정되는지 추적하는 useEffect 추가
-  useEffect(() => {
-    console.log('[useChat] roomId 변경됨:', roomId);
-  }, [roomId]);
-
-  // 주기적인 메시지 폴링 함수 추가
-  const fetchMessagesFromAPI = useCallback(async (roomId: string, userId: string) => {
-    try {
-      // HTTP API를 통해 메시지 가져오기
-      const params = new URLSearchParams();
-      if (transactionId) {
-        params.append('purchaseId', transactionId);
-      }
-      if (otherUserId) {
-        params.append('conversationWith', otherUserId);
-      }
-      
-      // 캐시 방지용 타임스탬프
-      params.append('_t', Date.now().toString());
-      
-      const authToken = getAuthToken();
-      const response = await fetch(`/api/messages?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`메시지 가져오기 실패: ${response.status}`);
-      }
-      
-      return await response.json();
-    } catch (error) {
-      console.error('[useChat] API에서 메시지 가져오기 실패:', error);
-      return null;
-    }
-  }, [transactionId, otherUserId]);
-
-  // 메시지 형식 변환 함수
-  const transformMessages = useCallback((messagesData: any[], userId: string): Message[] => {
-    return messagesData.map((msg: any) => ({
-      id: msg.id,
-      senderId: String(msg.senderId),
-      receiverId: msg.receiverId ? String(msg.receiverId) : undefined,
-      text: msg.content,
-      timestamp: msg.createdAt,
-      isMine: String(msg.senderId) === userId,
-      status: 'sent',
-      isRead: msg.isRead
-    }));
-  }, []);
-
-  // 메시지 변경 감지용 해시 계산 함수
-  const calculateMessagesHash = useCallback((messages: Message[]): string => {
-    return messages.map(m => `${m.id}:${m.isRead}`).join('|');
-  }, []);
-
-  // 이전 메시지 해시값 저장용 ref (useEffect 외부로 이동)
-  const prevMessagesHashRef = useRef<string>('');
-
-  // 주기적인 메시지 체크 로직 구현
-  useEffect(() => {
-    // 최초 렌더링 시 해시값 초기화
-    prevMessagesHashRef.current = calculateMessagesHash(messages);
-    
-    let pollingInterval: NodeJS.Timeout | null = null;
-    
-    // roomId가 있을 때만 폴링 설정
-    if (roomId && actualUserId) {
-      console.log('[useChat] 메시지 감지 타이머 설정');
-      
-      pollingInterval = setInterval(async () => {
-        // 소켓이 연결된 상태에서는 폴링 안함
-        if (socketConnected && socketRef.current?.connected) {
-          return;
-        }
-        
-        // 업데이트 중이면 중복 요청 방지
-        if (isUpdatingRef.current) return;
-        
-        isUpdatingRef.current = true;
-        
-        try {
-          const response = await fetchMessagesFromAPI(roomId, actualUserId);
-          if (!response || !response.success) return;
-          
-          const fetchedMessages = transformMessages(response.messages, actualUserId);
-          const newMessagesHash = calculateMessagesHash(fetchedMessages);
-          
-          // 변경이 있을 때만 상태 업데이트
-          if (newMessagesHash !== prevMessagesHashRef.current) {
-            console.log('[useChat] 메시지 변경 감지, 상태 업데이트 중');
-            setMessages(fetchedMessages);
-            prevMessagesHashRef.current = newMessagesHash;
-            
-            // 새 메시지가 있는지 확인
-            const hasNewMessages = fetchedMessages.length > messages.length;
-            if (hasNewMessages) {
-              // 스크롤 이벤트 트리거
-              triggerScrollToBottom(true);
-            }
-          }
-        } catch (error) {
-          console.error('[useChat] 메시지 감지 오류:', error);
-        } finally {
-          isUpdatingRef.current = false;
-        }
-      }, 5000); // 5초마다 폴링 (소켓 연결이 없을 때)
-    }
-    
-    return () => {
-      if (pollingInterval) {
-        console.log('[useChat] 메시지 감지 타이머 정리');
-        clearInterval(pollingInterval);
-      }
-    };
-  }, [roomId, actualUserId, socketConnected, messages, calculateMessagesHash, transformMessages, fetchMessagesFromAPI, triggerScrollToBottom]);
+  }, [unregisterAllSocketEvents]);
 
   // 훅 반환 객체
   return {

@@ -16,10 +16,11 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    console.log(`사용자 정보 조회 API 호출됨 - ID: ${params.id}`);
+    const id = await params.id;
+    console.log(`사용자 정보 조회 API 호출됨 - ID: ${id}`);
     
     // ID가 숫자인지 확인
-    const userId = parseInt(params.id);
+    const userId = parseInt(id);
     if (isNaN(userId)) {
       return addCorsHeaders(
         NextResponse.json(
