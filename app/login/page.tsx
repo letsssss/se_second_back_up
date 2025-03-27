@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAuth } from "@/contexts/auth-context"
 import { toast, Toaster } from "sonner"
+import KakaoLoginButton from "@/components/KakaoLoginButton"
 
 export default function Login() {
   const [email, setEmail] = useState("")
@@ -108,9 +109,7 @@ export default function Login() {
             {isLoading ? "로그인 중..." : "로그인"}
           </Button>
 
-          <Button className="w-full bg-[#FEE500] hover:bg-[#FEE500]/90 text-black font-medium py-2 transition-colors">
-            카카오로 1초 로그인/회원가입
-          </Button>
+          <KakaoLoginButton mode="login" />
 
           <Link href="/signup" className="block">
             <Button variant="outline" className="w-full border-gray-300 text-gray-700 py-2 transition-colors">

@@ -76,6 +76,7 @@ type AuthContextType = {
   login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>
   logout: () => void
   checkAuthStatus: () => Promise<boolean>
+  socialLogin: (provider: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -381,8 +382,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // 소셜 로그인 함수 추가
+  const socialLogin = async (provider: string) => {
+    try {
+      setIsLoading(true);
+      // Supabase 연동은 KakaoLoginButton 컴포넌트에서 직접 처리
+      console.log(`${provider} 로그인 시작`);
+    } catch (error) {
+      console.error(`${provider} 로그인 오류:`, error);
+      toast.error(`${provider} 로그인 중 오류가 발생했습니다.`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, checkAuthStatus }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isLoading,
+        login,
+        logout,
+        checkAuthStatus,
+        socialLogin
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

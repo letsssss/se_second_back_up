@@ -1,10 +1,15 @@
-[33mcommit 328ce5fbdef10a2516e74467d8ff72968a5b2d58[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m
-Author: letsssss <wlstjd1590@naver.com>
-Date:   Wed Mar 19 13:21:54 2025 +0900
-
-    Fix: 알림 컴포넌트의 날짜 처리 문제 해결 및 하이드레이션 오류 수정
-[33m3a0843d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m)[m 채팅 UI 개선: 스크롤 동작 수정 및 메시지가 항상 하단에 표시되도록 변경
-[33ma66b587[m 소켓 연결 타임아웃 문제 해결 및 메시지 감지 로직 개선
-[33m8dd6292[m 채팅 기능 개선: 인증 토큰 처리 및 자동 폴링 기능 추가
-[33m7150663[m 채팅 인터페이스 개선: 스크롤 동작 최적화, 풀링 시 자동 스크롤, 새 메시지 알림 기능 추가
-[33m0190430[m feat: 구매 확정 시 기분 좋은 이펙트 추가 (Confetti 효과 및 축하 모달)
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pnpm-lock.yaml', LF will be replaced by CRLF the next time Git touches it
+ app/api/auth/login/route.ts    |  32 [32m++++[m[31m-[m
+ app/api/auth/register/route.ts | 183 [32m+++++++++++++++[m[31m-----------[m
+ app/login/page.tsx             |   5 [32m+[m[31m-[m
+ app/mypage/page.tsx            |  28 [32m+++[m[31m-[m
+ app/signup/page.tsx            |  14 [32m++[m
+ contexts/auth-context.tsx      |  26 [32m+++[m[31m-[m
+ package-lock.json              | 147 [32m+++++++++++++++++++++[m
+ package.json                   |   5 [32m+[m[31m-[m
+ pnpm-lock.yaml                 | 282 [32m+++++++++++++++++++++++++++++++++++++++++[m
+ prisma/dev.db                  | Bin [31m94208[m -> [32m94208[m bytes
+ prisma/schema.prisma           |   4 [32m+[m[31m-[m
+ 11 files changed, 640 insertions(+), 86 deletions(-)

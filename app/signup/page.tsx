@@ -12,6 +12,8 @@ import { toast, Toaster } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
+import { supabase } from "@/utils/supabaseClient"
+import KakaoLoginButton from "@/components/KakaoLoginButton"
 
 export default function Signup() {
   const [agreed, setAgreed] = useState(false)
@@ -103,6 +105,18 @@ export default function Signup() {
             {error}
           </div>
         )}
+
+        {/* Kakao Signup Button */}
+        <KakaoLoginButton mode="signup" text="카카오로 간편 가입하기" />
+
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-300"></div>
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="px-2 bg-gray-50 text-gray-500">또는 이메일로 가입하기</span>
+          </div>
+        </div>
 
         {/* Signup Form */}
         <form className="space-y-6" onSubmit={handleSubmit}>

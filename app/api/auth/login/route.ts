@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import prisma from "@/lib/prisma"
 import { comparePassword, generateAccessToken, generateRefreshToken } from "@/lib/auth"
 import jwt from "jsonwebtoken"
+import { supabase } from "@/utils/supabaseClient"
 
 // JWT 시크릿 키 정의
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -41,7 +42,28 @@ export async function POST(request: Request) {
     }
 
     try {
-      // 사용자 찾기
+      // Supabase 클라이언트 검증
+      if (!supabase || !supabase.auth) {
+        console.error("Supabase 클라이언트 초기화되지 않음");
+        return NextResponse.json({ error: "내부 서버 오류가 발생했습니다." }, { status: 500 });
+      }
+      
+      console.log("Supabase 정상 초기화 확인, auth.signInWithPassword 함수 유무:", !!supabase.auth.signInWithPassword);
+      
+      // Supabase 로그인 시도
+      const { data: supabaseData, error: supabaseError } = await supabase.auth.signInWithPassword({
+        email: email.toLowerCase(),
+        password,
+      });
+
+      if (supabaseError) {
+        console.log("Supabase 로그인 실패:", supabaseError.message);
+        // Supabase 로그인 실패 시 기존 로직으로 진행
+      } else {
+        console.log("Supabase 로그인 성공:", supabaseData);
+      }
+
+      // 사용자 찾기 (Prisma)
       const user = await prisma.user.findUnique({
         where: { email: email.toLowerCase() },
       });
@@ -89,12 +111,18 @@ export async function POST(request: Request) {
           email: user.email,
           role: user.role
         },
-        token
+        token,
+        supabaseSession: supabaseData?.session
       });
 
       // 쿠키 설정 (헬퍼 함수 사용)
       setAuthCookie(response, 'auth-token', token);
       setAuthCookie(response, 'auth-status', 'authenticated', false);
+      
+      // Supabase 세션 토큰이 있으면 쿠키에 저장
+      if (supabaseData?.session) {
+        setAuthCookie(response, 'supabase-token', supabaseData.session.access_token);
+      }
       
       // 캐시 방지 헤더 추가
       response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');

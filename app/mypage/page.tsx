@@ -127,9 +127,19 @@ export default function MyPage() {
     
     setIsLoadingSales(true);
     try {
+      // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '';
+      
       // 요청 URL에 userId 파라미터 추가
       console.log("판매 목록 불러오기 시도... 사용자 ID:", user.id);
-      const response = await fetch(`/api/posts?userId=${user.id}`);
+      const response = await fetch(`/api/posts?userId=${user.id}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
       
       console.log("API 응답 상태:", response.status, response.statusText);
         
@@ -161,6 +171,8 @@ export default function MyPage() {
       // 구매 확정(CONFIRMED) 상태 확인을 위해 추가 API 호출
       const purchaseResponse = await fetch('/api/seller-purchases', {
         headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         }
@@ -309,9 +321,19 @@ export default function MyPage() {
     
     setIsLoadingPurchases(true);
     try {
-      // 구매 목록 API 호출
+      // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '';
+      
+      // 구매 목록 API 호출 (인증 토큰 포함)
       console.log("구매 목록 불러오기 시도... 사용자 ID:", user.id);
-      const response = await fetch('/api/purchase');
+      const response = await fetch('/api/purchase', {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
       
       console.log("구매 API 응답 상태:", response.status, response.statusText);
       
