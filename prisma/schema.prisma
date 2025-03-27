@@ -29,7 +29,7 @@ model User {
 }
 
 model Post {
-  id            Int            @id @default(autoincrement())
+  id            BigInt          @id @default(autoincrement())
   title         String
   content       String
   category      String         @default("GENERAL")
@@ -52,7 +52,7 @@ model Post {
 model Notification {
   id        Int      @id @default(autoincrement())
   userId    Int
-  postId    Int?
+  postId    BigInt?
   message   String
   type      String
   isRead    Boolean  @default(false)
@@ -66,7 +66,7 @@ model Purchase {
   orderNumber   String    @unique
   buyerId       Int
   sellerId      Int
-  postId        Int?
+  postId        BigInt?
   quantity      Int       @default(1)
   totalPrice    BigInt
   status        String    @default("PENDING")
