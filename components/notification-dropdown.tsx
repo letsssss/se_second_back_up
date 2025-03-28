@@ -110,10 +110,14 @@ export function NotificationDropdown() {
     
     setIsLoadingNotifications(true);
     try {
+      // 토큰 가져오기 (JWT 또는 Supabase)
+      const authToken = localStorage.getItem('token') || localStorage.getItem('supabase_token');
+      
       const response = await fetch('/api/notifications', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
         },
         credentials: 'include', // 쿠키 포함
       });
@@ -176,10 +180,14 @@ export function NotificationDropdown() {
 
   const handleNotificationClick = async (id: number) => {
     try {
+      // 토큰 가져오기 (JWT 또는 Supabase)
+      const authToken = localStorage.getItem('token') || localStorage.getItem('supabase_token');
+      
       const response = await fetch('/api/notifications', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
         },
         body: JSON.stringify({ notificationId: id }),
       })
@@ -200,6 +208,9 @@ export function NotificationDropdown() {
 
   const markAllAsRead = async () => {
     try {
+      // 토큰 가져오기 (JWT 또는 Supabase)
+      const authToken = localStorage.getItem('token') || localStorage.getItem('supabase_token');
+      
       const unreadNotifications = notifications.filter(n => !n.isRead)
       await Promise.all(
         unreadNotifications.map(notification =>
@@ -207,6 +218,7 @@ export function NotificationDropdown() {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
+              'Authorization': authToken ? `Bearer ${authToken}` : '',
             },
             body: JSON.stringify({ notificationId: notification.id }),
           })

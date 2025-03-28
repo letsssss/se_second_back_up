@@ -5,10 +5,16 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/utils/supabaseClient';
 import { toast } from 'sonner';
 
+// 인증 컨텍스트에서 필요한 함수만 가져오기
+import { useAuth } from '@/contexts/auth-context';
+
 export default function AuthCallback() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("로그인 처리 중...");
+  
+  // 인증 컨텍스트에서 checkAuthStatus 가져오기
+  const { checkAuthStatus } = useAuth();
 
   useEffect(() => {
     // 카카오 로그인 처리 함수
@@ -107,9 +113,43 @@ export default function AuthCallback() {
             name: data.session.user.user_metadata?.full_name || '사용자',
           }));
           
-          // 토큰 저장
+          // Supabase 토큰 저장
           localStorage.setItem('supabase_token', data.session.access_token);
+          
+          // JWT 토큰 형식으로도 토큰 저장 (다른 API와의 호환성을 위해)
+          localStorage.setItem('token', data.session.access_token);
+          
           localStorage.setItem('auth_status', 'authenticated');
+          
+          // 시스템 JWT 토큰을 가져오기 위한 API 호출
+          try {
+            setStatusMessage("추가 인증 정보 가져오는 중...");
+            const jwtResponse = await fetch('/api/auth/kakao-token', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                supabaseUserId: data.session.user.id,
+                email: data.session.user.email
+              })
+            });
+            
+            if (jwtResponse.ok) {
+              const jwtData = await jwtResponse.json();
+              if (jwtData.token) {
+                // 시스템 JWT 토큰 저장
+                localStorage.setItem('token', jwtData.token);
+                console.log('JWT 토큰이 성공적으로 저장되었습니다.');
+              }
+            }
+          } catch (jwtError) {
+            console.error('JWT 토큰 가져오기 오류:', jwtError);
+            // JWT 오류가 있어도 로그인 진행
+          }
+          
+          // 인증 상태 강제 업데이트
+          await checkAuthStatus();
           
           console.log('로그인 성공, 홈페이지로 리디렉션...');
           toast.success('로그인 성공!');
@@ -117,9 +157,23 @@ export default function AuthCallback() {
           // 로컬 스토리지에서 모드 삭제
           localStorage.removeItem('kakao_auth_mode');
           
-          // 홈페이지로 리디렉션
+          // 인증 관련 이벤트 발생시키기 (전역에서 인증 상태 변화 감지)
+          if (typeof window !== 'undefined') {
+            const authEvent = new CustomEvent('auth-state-change', {
+              detail: { authenticated: true }
+            });
+            window.dispatchEvent(authEvent);
+          }
+          
+          // 1초 지연 후 홈페이지로 리디렉션
           setTimeout(() => {
             router.push('/');
+            // 페이지 완전히 새로고침
+            setTimeout(() => {
+              if (typeof window !== 'undefined') {
+                window.location.href = '/';
+              }
+            }, 100);
           }, 1000);
         } else {
           setError('로그인 처리 중 오류가 발생했습니다.');
@@ -131,7 +185,7 @@ export default function AuthCallback() {
     };
 
     handleAuthCallback();
-  }, [router]);
+  }, [router, checkAuthStatus]);
 
   return (
     <div className="min-h-screen flex items-center justify-center">

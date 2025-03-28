@@ -267,7 +267,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     
     // 스토리지에서 다시 한 번 확인
     getUserFromStorage();
-  }, [user, getUserFromStorage]);
+    
+    // 인증 상태 변경 이벤트 리스너 추가
+    const handleAuthStateChange = (event: Event) => {
+      console.log('인증 상태 변경 이벤트 수신됨');
+      // 커스텀 이벤트에서 authenticated 상태 확인
+      const customEvent = event as CustomEvent<{authenticated: boolean}>;
+      if (customEvent.detail?.authenticated) {
+        // 인증 상태가 true인 경우 사용자 정보 새로고침
+        getUserFromStorage();
+        checkAuthStatus();
+      } else {
+        // 인증 상태가 false인 경우 사용자 정보 초기화
+        setUser(null);
+      }
+    };
+    
+    // 이벤트 리스너 등록
+    window.addEventListener('auth-state-change', handleAuthStateChange);
+    
+    // 컴포넌트 언마운트 시 이벤트 리스너 제거
+    return () => {
+      window.removeEventListener('auth-state-change', handleAuthStateChange);
+    };
+  }, [user, getUserFromStorage, checkAuthStatus]);
 
   // 로그인 함수
   const login = async (email: string, password: string) => {

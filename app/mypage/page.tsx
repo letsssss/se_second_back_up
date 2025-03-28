@@ -121,24 +121,27 @@ export default function MyPage() {
   // 읽지 않은 알림 카운트
   const unreadNotificationCount = notifications.filter(n => !n.isRead).length;
 
-  // 판매 중인 상품 목록 가져오기
+  // 내가 판매 중인 게시물 목록 가져오기
   const fetchOngoingSales = async () => {
     if (!user) return;
     
     setIsLoadingSales(true);
     try {
       // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '';
+      const authToken = typeof window !== 'undefined' 
+        ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
+        : '';
       
       // 요청 URL에 userId 파라미터 추가
       console.log("판매 목록 불러오기 시도... 사용자 ID:", user.id);
       const response = await fetch(`/api/posts?userId=${user.id}`, {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
-        }
+        },
+        credentials: 'include', // 쿠키를 포함시킵니다
       });
       
       console.log("API 응답 상태:", response.status, response.statusText);
@@ -172,7 +175,7 @@ export default function MyPage() {
       const purchaseResponse = await fetch('/api/seller-purchases', {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         }
@@ -322,17 +325,20 @@ export default function MyPage() {
     setIsLoadingPurchases(true);
     try {
       // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '';
+      const authToken = typeof window !== 'undefined' 
+        ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
+        : '';
       
       // 구매 목록 API 호출 (인증 토큰 포함)
       console.log("구매 목록 불러오기 시도... 사용자 ID:", user.id);
       const response = await fetch('/api/purchase', {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
-        }
+        },
+        credentials: 'include', // 쿠키를 포함시킵니다
       });
       
       console.log("구매 API 응답 상태:", response.status, response.statusText);
@@ -456,13 +462,17 @@ export default function MyPage() {
     setIsLoadingNotifications(true);
     try {
       // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
-      const token = typeof window !== 'undefined' ? localStorage.getItem('auth-token') || '' : '';
+      // token 또는 supabase_token 키로 토큰을 가져옴
+      const authToken = typeof window !== 'undefined' 
+        ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
+        : '';
       
       const response = await fetch('/api/notifications', {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        }
+          'Authorization': authToken ? `Bearer ${authToken}` : ''
+        },
+        credentials: 'include', // 쿠키를 포함시킵니다
       });
       
       if (!response.ok) {
@@ -550,14 +560,18 @@ export default function MyPage() {
   const markNotificationAsRead = async (notificationId: number) => {
     try {
       // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
-      const token = typeof window !== 'undefined' ? localStorage.getItem('auth-token') || '' : '';
+      // token 또는 supabase_token 키로 토큰을 가져옴
+      const authToken = typeof window !== 'undefined' 
+        ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
+        : '';
       
       const response = await fetch('/api/notifications', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': authToken ? `Bearer ${authToken}` : ''
         },
+        credentials: 'include', // 쿠키를 포함시킵니다
         body: JSON.stringify({ notificationId }),
       });
 
@@ -584,12 +598,19 @@ export default function MyPage() {
     try {
       console.log("게시물 삭제 요청:", postId);
       
+      // 클라이언트 사이드에서만 localStorage에 접근하도록 수정
+      const authToken = typeof window !== 'undefined' 
+        ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
+        : '';
+      
       const response = await fetch(`/api/posts/${postId}`, {
         method: 'DELETE',
         headers: {
           'Accept': 'application/json',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': authToken ? `Bearer ${authToken}` : ''
         },
+        credentials: 'include', // 쿠키를 포함시킵니다
       });
       
       // 응답이 JSON이 아닌 경우 처리
