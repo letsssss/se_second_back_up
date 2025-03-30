@@ -12,7 +12,12 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "이지티켓",
   description: "쉽고 빠른 티켓 거래 플랫폼",
-  generator: 'v0.dev'
+  generator: 'v0.dev',
+  verification: {
+    other: {
+      "naver-site-verification": ["877909cff89a029e033c97399331d77f7ca29013"],
+    },
+  }
 }
 
 export default function RootLayout({
@@ -22,6 +27,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko">
+      <head>
+        <meta name="naver-site-verification" content="877909cff89a029e033c97399331d77f7ca29013" />
+      </head>
       <body className={inter.className} suppressHydrationWarning={true}>
         <AuthProvider>
           {children}
