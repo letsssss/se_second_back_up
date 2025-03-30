@@ -7,6 +7,9 @@ import { ArrowLeft, ArrowDown, ArrowUp, ShoppingCart, Tag, Filter, ChevronLeft, 
 import { Button } from "@/components/ui/button"
 import { WithdrawModal } from "@/components/withdraw-modal"
 
+// API 기본 URL 설정 (환경별로 다른 호스트 사용)
+const API_BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+
 // 트랜잭션 타입 정의
 type TransactionType = "입금" | "출금" | "구매" | "판매"
 type FilterType = "전체" | TransactionType
