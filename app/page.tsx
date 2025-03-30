@@ -129,7 +129,7 @@ export default function Page() {
               )}
               <button
                 onClick={handleTicketSaleClick}
-                className="px-4 py-2 bg-[#0061FF] text-white rounded-md hover:bg-[#0052D6] transition-colors"
+                className="px-4 py-2 bg-[#0061FF] text-white rounded-xl hover:bg-[#0052D6] transition-colors"
               >
                 티켓 판매
               </button>
