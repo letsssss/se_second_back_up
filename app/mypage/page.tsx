@@ -12,9 +12,6 @@ import { WithdrawModal } from "@/components/withdraw-modal"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { FaTrash } from "react-icons/fa"
 
-// API 기본 URL 설정 (환경별로 다른 호스트 사용)
-const API_BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-
 // 간단한 인라인 Loader 컴포넌트
 const Loader = ({ size = 24 }: { size?: number }) => (
   <div className="animate-spin" style={{ width: size, height: size }}>
@@ -137,7 +134,7 @@ export default function MyPage() {
       
       // 요청 URL에 userId 파라미터 추가
       console.log("판매 목록 불러오기 시도... 사용자 ID:", user.id);
-      const response = await fetch(`${API_BASE_URL}/api/posts?userId=${user.id}`, {
+      const response = await fetch(`/api/posts?userId=${user.id}`, {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': authToken ? `Bearer ${authToken}` : '',
@@ -175,7 +172,7 @@ export default function MyPage() {
       
       // 판매자의 판매 상품에 대한 구매 정보도 함께 가져옵니다
       // 구매 확정(CONFIRMED) 상태 확인을 위해 추가 API 호출
-      const purchaseResponse = await fetch(`${API_BASE_URL}/api/seller-purchases`, {
+      const purchaseResponse = await fetch('/api/seller-purchases', {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': authToken ? `Bearer ${authToken}` : '',
@@ -334,7 +331,7 @@ export default function MyPage() {
       
       // 구매 목록 API 호출 (인증 토큰 포함)
       console.log("구매 목록 불러오기 시도... 사용자 ID:", user.id);
-      const response = await fetch(`${API_BASE_URL}/api/purchase`, {
+      const response = await fetch('/api/purchase', {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': authToken ? `Bearer ${authToken}` : '',
@@ -470,7 +467,7 @@ export default function MyPage() {
         ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
         : '';
       
-      const response = await fetch(`${API_BASE_URL}/api/notifications`, {
+      const response = await fetch('/api/notifications', {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': authToken ? `Bearer ${authToken}` : ''
@@ -568,7 +565,7 @@ export default function MyPage() {
         ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
         : '';
       
-      const response = await fetch(`${API_BASE_URL}/api/notifications`, {
+      const response = await fetch('/api/notifications', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -606,7 +603,7 @@ export default function MyPage() {
         ? localStorage.getItem('token') || localStorage.getItem('supabase_token') || '' 
         : '';
       
-      const response = await fetch(`${API_BASE_URL}/api/posts/${postId}`, {
+      const response = await fetch(`/api/posts/${postId}`, {
         method: 'DELETE',
         headers: {
           'Accept': 'application/json',

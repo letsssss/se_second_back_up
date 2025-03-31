@@ -12,9 +12,6 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
-// API 기본 URL 설정 (환경별로 다른 호스트 사용)
-const API_BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-
 export default function EditProfilePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -78,7 +75,7 @@ export default function EditProfilePage() {
         
         // credentials 옵션 추가 및 캐시 방지 헤더 설정
         const timestamp = Date.now();
-        const response = await fetch(`${API_BASE_URL}/api/user/update-profile?t=${timestamp}`, {
+        const response = await fetch(`/api/user/update-profile?t=${timestamp}`, {
           method: "GET",
           credentials: "include", // 쿠키를 포함시켜 요청
           headers: {
@@ -144,7 +141,7 @@ export default function EditProfilePage() {
       
       // credentials 옵션 추가 및 캐시 방지 헤더 설정
       const timestamp = Date.now();
-      const response = await fetch(`${API_BASE_URL}/api/user/update-profile?t=${timestamp}`, {
+      const response = await fetch(`/api/user/update-profile?t=${timestamp}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",

@@ -221,10 +221,14 @@ export default function TransactionDetail() {
         // 거래 정보 가져오기 (오류 처리 개선)
         console.log(`API 요청 시작: /api/purchase/${id}`);
         try {
+          // 로컬 스토리지에서 토큰 가져오기
+          const authToken = localStorage.getItem('token') || '';
+          
           const response = await fetch(`/api/purchase/${id}`, {
             method: 'GET',
             headers: {
               'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`,
               'Cache-Control': 'no-cache',
               'Pragma': 'no-cache'
             }
@@ -495,11 +499,15 @@ export default function TransactionDetail() {
       setIsSubmitting(true);
       console.log(`상태 변경 요청: ${newStatus}, 거래 ID: ${params.id}`);
       
+      // 로컬 스토리지에서 토큰 가져오기
+      const authToken = localStorage.getItem('token') || '';
+      
       // API 호출
       const response = await fetch(`/api/purchase/${params.id}/status`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
           'Cache-Control': 'no-cache'
         },
         body: JSON.stringify({ status: newStatus }),
@@ -681,11 +689,15 @@ export default function TransactionDetail() {
       setIsSubmitting(true);
       console.log(`구매 확정 요청 알림 전송: 거래 ID: ${params.id}`);
       
+      // 로컬 스토리지에서 토큰 가져오기
+      const authToken = localStorage.getItem('token') || '';
+      
       // API 호출 (알림만 보냄)
       const response = await fetch(`/api/purchase/${params.id}/confirmation-request`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
           'Cache-Control': 'no-cache'
         }
       });
